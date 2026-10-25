@@ -15,6 +15,8 @@ The first migration creates the tenant-safe POS tables and Row Level Security. T
 - `daraja-callback` — public Safaricom callback; validates the stored checkout request and activates 30 days.
 - `subscription-maintenance` — protected daily task that moves expired subscriptions into grace or suspension and creates reminder records.
 
+Each `index.ts` is standalone and can be pasted directly into the Supabase Dashboard editor. The `_shared` folder is retained for a future CLI refactor but is not required by these deployable files.
+
 Deploy from the project root after linking the Supabase CLI:
 
 ```sh
