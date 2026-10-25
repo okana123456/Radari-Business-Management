@@ -7,14 +7,21 @@ type BusinessAccount = { businessId: string; businessName: string; phone: string
 const slugify = (value: string) => value.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
 
 async function loadBusinessAccount(user: User): Promise<BusinessAccount | null> {
-  const { data: membership, error } = await supabase
+  const { data: membership, error: membershipError } = await supabase
     .from('business_memberships')
-    .select('business_id, businesses(name), subscriptions(status)')
+    .select('business_id, businesses(name)')
     .eq('user_id', user.id).eq('status', 'active').limit(1).maybeSingle()
-  if (error) throw error
+  if (membershipError) throw membershipError
   if (!membership) return null
+
+  const { data: subscription, error: subscriptionError } = await supabase
+    .from('subscriptions')
+    .select('status')
+    .eq('business_id', membership.business_id)
+    .maybeSingle()
+  if (subscriptionError) throw subscriptionError
+
   const business = Array.isArray(membership.businesses) ? membership.businesses[0] : membership.businesses
-  const subscription = Array.isArray(membership.subscriptions) ? membership.subscriptions[0] : membership.subscriptions
   return {
     businessId: membership.business_id,
     businessName: business?.name || 'My Business',
