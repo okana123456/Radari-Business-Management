@@ -1,0 +1,11 @@
+project_id = "radari-business-management"
+
+[functions.initiate-subscription-payment]
+verify_jwt = true
+
+[functions.daraja-callback]
+verify_jwt = false
+
+[functions.subscription-maintenance]
+verify_jwt = false
+
