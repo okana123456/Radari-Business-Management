@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useState } from 'react'
 import { Link, Navigate, Route, Routes, useNavigate } from 'react-router-dom'
-import type { Session, User } from '@supabase/supabase-js'
+import { FunctionsHttpError, type Session, type User } from '@supabase/supabase-js'
 import { supabase } from './lib/supabase'
 
 type BusinessAccount = { businessId: string; businessName: string; phone: string; subscriptionStatus: string }
@@ -107,7 +107,13 @@ function Activation({ account, onActivated }: { account: BusinessAccount; onActi
     event.preventDefault(); setBusy(true); setError(''); setMessage('')
     try {
       const { data, error: invokeError } = await supabase.functions.invoke('initiate-subscription-payment', { body: { businessId: account.businessId, phone } })
-      if (invokeError) throw invokeError
+      if (invokeError) {
+        if (invokeError instanceof FunctionsHttpError) {
+          const details = await invokeError.context.json().catch(() => null)
+          throw new Error(details?.error || details?.message || invokeError.message)
+        }
+        throw invokeError
+      }
       if (data?.error) throw new Error(data.error)
       setMessage(data?.message || 'Check your phone and enter your M-Pesa PIN.')
     } catch (caught) { setError(caught instanceof Error ? caught.message : 'Payment request failed') }
