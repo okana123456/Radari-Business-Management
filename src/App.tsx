@@ -2,6 +2,7 @@ import { FormEvent, useEffect, useState } from 'react'
 import { Link, Navigate, Route, Routes, useNavigate } from 'react-router-dom'
 import { FunctionsHttpError, type Session, type User } from '@supabase/supabase-js'
 import { supabase } from './lib/supabase'
+import { POS } from './POS'
 
 type BusinessAccount = { businessId: string; businessName: string; phone: string; subscriptionStatus: string }
 const slugify = (value: string) => value.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
@@ -122,10 +123,6 @@ function Activation({ account, onActivated }: { account: BusinessAccount; onActi
   return <main className="centered payment-bg"><section className="card payment-card"><span className="eyebrow">Activate {account.businessName}</span><h1>KSh 1,500</h1><p className="intro">Get full Radari access for 30 days. Your account activates automatically after M-Pesa confirms payment.</p><form onSubmit={pay}><label>M-Pesa phone number<input value={phone} onChange={(event) => setPhone(event.target.value)} type="tel" required /></label>{error && <div className="notice error">{error}</div>}{message && <div className="notice success">{message}</div>}<button className="primary submit" disabled={busy}>{busy ? 'Sending request…' : 'Pay KSh 1,500'}</button></form><button className="text-button" onClick={() => supabase.auth.signOut()}>Sign out</button></section></main>
 }
 
-function Dashboard({ account }: { account: BusinessAccount }) {
-  return <main className="dashboard"><header><div><span className="eyebrow">Radari POS</span><h1>{account.businessName}</h1></div><button className="secondary-button" onClick={() => supabase.auth.signOut()}>Sign out</button></header><section className="welcome-panel"><h2>Your business is active</h2><p>The secure account and subscription foundation is ready. Sales, stock and reports are the next module being connected.</p></section></main>
-}
-
 function AccountRoute({ session }: { session: Session | null }) {
   const [account, setAccount] = useState<BusinessAccount | null>(null), [loading, setLoading] = useState(true), [error, setError] = useState('')
   const refresh = async () => { if (!session?.user) return; try { setAccount(await provisionBusiness(session.user)) } catch (caught) { setError(caught instanceof Error ? caught.message : 'Account could not be loaded') } finally { setLoading(false) } }
@@ -133,7 +130,7 @@ function AccountRoute({ session }: { session: Session | null }) {
   if (!session) return <Navigate to="/login" replace />
   if (loading) return <main className="centered"><div className="loader">Loading your business…</div></main>
   if (error || !account) return <main className="centered"><section className="card"><div className="notice error">{error || 'Business account not found'}</div></section></main>
-  return ['active', 'grace'].includes(account.subscriptionStatus) ? <Dashboard account={account} /> : <Activation account={account} onActivated={refresh} />
+  return ['active', 'grace'].includes(account.subscriptionStatus) ? <POS account={account} user={session.user} /> : <Activation account={account} onActivated={refresh} />
 }
 
 export default function App() {

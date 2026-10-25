@@ -43,3 +43,67 @@ input:focus { border-color: #0284c7; box-shadow: 0 0 0 3px #0ea5e922; }
 .welcome-panel p { max-width: 650px; color: #e0f2fe; line-height: 1.7; }
 @media (max-width: 600px) { .card { padding: 28px 22px; } .hero { margin-top: 4vh; } nav { align-items: flex-start; } .nav-links { gap: 10px; font-size: .9rem; } }
 
+.pos-shell { min-height: 100vh; display: grid; grid-template-columns: minmax(0, 1fr) 380px; background: #f1f5f9; }
+.pos-products { min-width: 0; }
+.pos-header { min-height: 72px; padding: 12px 20px; display: flex; align-items: center; justify-content: space-between; color: white; background: linear-gradient(135deg, #075985, #0284c7); }
+.pos-header div:first-child { display: grid; gap: 3px; }
+.pos-header span { font-size: .82rem; color: #e0f2fe; }
+.pos-actions { display: flex; gap: 8px; }
+.pos-actions button, .category-strip button { border: 0; border-radius: 9px; padding: 9px 12px; cursor: pointer; }
+.pos-actions button { background: #ffffff1f; color: white; }
+.mobile-cart { display: none; background: #059669 !important; }
+.category-strip { display: flex; gap: 8px; padding: 10px 14px; overflow-x: auto; background: white; border-bottom: 1px solid #e2e8f0; }
+.category-strip button { white-space: nowrap; background: #f1f5f9; color: #475569; }
+.category-strip button.active { background: #0369a1; color: white; }
+.product-search { padding: 12px 14px; background: white; }
+.product-grid { padding: 14px; display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 11px; }
+.product-tile { min-height: 150px; padding: 14px 10px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; border: 2px solid #e2e8f0; border-radius: 14px; background: white; cursor: pointer; }
+.product-tile:hover { transform: translateY(-2px); border-color: #0284c7; box-shadow: 0 8px 20px #0f172a12; }
+.product-tile.low { border-color: #f59e0b; background: #fffbeb; }
+.product-tile:disabled { opacity: .55; cursor: not-allowed; border-color: #ef4444; }
+.product-icon { font-size: 2rem; }
+.product-tile b { color: #0369a1; }
+.product-tile small { color: #64748b; }
+.pos-cart { height: 100vh; position: sticky; top: 0; display: flex; flex-direction: column; background: white; border-left: 1px solid #cbd5e1; }
+.cart-title { min-height: 72px; padding: 18px; display: flex; align-items: center; justify-content: space-between; background: #172033; color: white; }
+.cart-title h2 { margin: 0; font-size: 1.1rem; }
+.cart-title button { display: none; border: 0; background: none; color: white; font-size: 1.6rem; }
+.cart-list { flex: 1; overflow-y: auto; padding: 12px; }
+.empty-cart, .empty-products { padding: 60px 24px; text-align: center; color: #64748b; }
+.empty-cart { font-size: 2.5rem; }
+.empty-cart p { font-size: .9rem; }
+.empty-products button { padding: 11px 16px; border: 0; border-radius: 9px; background: #0369a1; color: white; }
+.cart-line { padding: 11px 8px; display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 10px; border-bottom: 1px solid #e2e8f0; }
+.cart-line > div:first-child { display: grid; gap: 3px; }
+.cart-line small { color: #64748b; }
+.quantity { display: flex; align-items: center; gap: 6px; }
+.quantity button { width: 27px; height: 27px; border: 0; border-radius: 6px; cursor: pointer; }
+.cart-footer { padding: 14px; border-top: 1px solid #cbd5e1; }
+.sale-total { display: flex; justify-content: space-between; font-size: 1.25rem; margin-bottom: 12px; }
+.payment-options { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; }
+.payment-options button { padding: 11px 4px; border: 2px solid #e2e8f0; border-radius: 9px; background: white; cursor: pointer; }
+.payment-options button.active { border-color: #059669; color: #047857; background: #ecfdf5; }
+.checkout-actions { display: grid; grid-template-columns: 1fr 2fr; gap: 8px; margin-top: 10px; }
+.checkout-actions button { padding: 13px; border: 0; border-radius: 9px; font-weight: 800; cursor: pointer; }
+.complete-sale { background: #059669; color: white; }
+.complete-sale:disabled { background: #cbd5e1; }
+.pos-error { margin: 8px 14px; padding: 11px; border-radius: 9px; color: #991b1b; background: #fee2e2; }
+.pos-modal { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 18px; background: #0f172aaa; }
+.stock-form, .receipt-paper { width: min(520px, 100%); max-height: 94vh; overflow-y: auto; padding: 28px; border-radius: 18px; background: white; box-shadow: 0 25px 70px #0005; }
+.stock-form { position: relative; }
+.stock-form h2 { margin-top: 0; }
+.modal-close { position: absolute; top: 12px; right: 14px; border: 0; background: none; font-size: 1.6rem; cursor: pointer; }
+.form-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.save-stock { padding: 14px; border: 0; border-radius: 10px; background: #0369a1; color: white; font-weight: 800; }
+.receipt-paper { font-family: 'Courier New', monospace; }
+.receipt-print { text-align: center; }
+.receipt-print h2 { margin-bottom: 4px; }
+.receipt-print p { margin: 7px 0; color: #475569; }
+.receipt-line { display: flex; justify-content: space-between; padding: 5px 0; text-align: left; }
+.receipt-line.total { font-size: 1.15rem; }
+.receipt-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; margin-top: 20px; }
+.receipt-buttons button { padding: 12px; border: 0; border-radius: 9px; background: #0369a1; color: white; }
+.receipt-buttons button:last-child { background: #059669; }
+@media (max-width: 900px) { .pos-shell { grid-template-columns: 1fr; } .pos-cart { display: none; } .pos-cart.show { display: flex; position: fixed; inset: 0; z-index: 40; } .cart-title button, .mobile-cart { display: block; } .pos-actions button:nth-child(2) { display: none; } .product-grid { grid-template-columns: repeat(auto-fill, minmax(115px, 1fr)); } }
+@media print { body > * { visibility: hidden; } .receipt-modal, .receipt-modal * { visibility: visible; } .receipt-modal { position: absolute; inset: 0; background: white; } .receipt-paper { box-shadow: none; } .receipt-buttons { display: none; } }
+
