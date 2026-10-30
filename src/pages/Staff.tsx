@@ -2,7 +2,8 @@ import { FormEvent, useCallback, useEffect, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAccount } from '../lib/account'
 import { Role, roleDescription, roleLabel } from '../lib/roles'
-import { dateOnly, friendlyError } from '../lib/format'
+import { dateOnly, friendlyError, money, presetRange } from '../lib/format'
+import { fetchReport } from './Dashboard'
 import { ErrorNotice, Loading, Modal, PageHeader, StatusBadge } from '../components/ui'
 
 type Member = { user_id: string; full_name: string; email: string | null; role: Role; status: string; joined_at: string }
@@ -17,6 +18,10 @@ export default function Staff() {
   const [inviting, setInviting] = useState(false)
   const [editing, setEditing] = useState<Member | null>(null)
   const [copied, setCopied] = useState(false)
+  const [activity, setActivity] = useState<Map<string, { transactions: number; revenue: number }>>(new Map())
+  useEffect(() => {
+    fetchReport(businessId, presetRange('30days')).then(r => setActivity(new Map(r.cashiers.map(c => [c.user_id, { transactions: c.transactions, revenue: Number(c.revenue) }])))).catch(() => undefined)
+  }, [businessId])
   const assignable = ASSIGNABLE.filter(r => role === 'owner' || r !== 'admin')
   const signupLink = `${window.location.origin}/signup?staff=1`
 
@@ -42,23 +47,24 @@ export default function Staff() {
   }
 
   return <>
-    <PageHeader title="Staff" subtitle="Who can use Radari for this business, and what they can do" actions={<button type="button" className="button" onClick={() => setInviting(true)}>+ Invite staff</button>} />
+    <PageHeader title="Staff and users" subtitle="Who can use Radari for this business, and what they can do" actions={<button type="button" className="button" onClick={() => setInviting(true)}>Invite staff</button>} />
     <ErrorNotice message={error} onRetry={load} />
     <section className="panel how-it-works">
       <h2>How staff join</h2>
       <ol>
         <li>Invite them here using their email address and choose a role.</li>
-        <li>Send them this link to create their own login: <code>{signupLink}</code> <button type="button" className="link-button" onClick={copyLink}>{copied ? 'Copied ✓' : 'Copy link'}</button></li>
+        <li>Send them this link to create their own login: <code>{signupLink}</code> <button type="button" className="link-button" onClick={copyLink}>{copied ? 'Copied' : 'Copy link'}</button></li>
         <li>Once they confirm their email and sign in, they join your business automatically. Invitations expire after 14 days.</li>
       </ol>
     </section>
     {!members ? <Loading /> : <div className="table-wrap"><table className="data-table">
-      <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Joined</th><th aria-label="Actions" /></tr></thead>
+      <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th className="num">Sales, 30 days</th><th>Joined</th><th aria-label="Actions" /></tr></thead>
       <tbody>{members.map(m => <tr key={m.user_id}>
         <td data-label="Name"><strong>{m.full_name}</strong>{m.user_id === user.id && <small>You</small>}</td>
         <td data-label="Email">{m.email || '—'}</td>
         <td data-label="Role">{roleLabel[m.role]}</td>
         <td data-label="Status"><StatusBadge status={m.status} /></td>
+        <td data-label="Sales, 30 days" className="num">{activity.get(m.user_id)?.transactions || 0}<small>{money(activity.get(m.user_id)?.revenue || 0)}</small></td>
         <td data-label="Joined">{dateOnly(m.joined_at)}</td>
         <td className="row-actions">{m.role !== 'owner' && m.user_id !== user.id && (role === 'owner' || m.role !== 'admin') && <button type="button" onClick={() => setEditing(m)}>Change</button>}</td>
       </tr>)}</tbody>

@@ -2,9 +2,9 @@ import { FormEvent, lazy, ReactElement, useCallback, useEffect, useState } from 
 import { Link, Navigate, Route, Routes, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import type { Session, User } from '@supabase/supabase-js'
 import { supabase } from './lib/supabase'
-import { AccountProvider, Business, loadMemberships, Membership, pickMembership, rememberBusiness, Subscription, subscriptionActive, useAccount } from './lib/account'
+import { AccountProvider, Business, BUSINESS_COLUMNS, loadMemberships, Membership, pickMembership, rememberBusiness, Subscription, subscriptionActive, useAccount } from './lib/account'
 import { can, homePath, Permission } from './lib/roles'
-import { friendlyError, money } from './lib/format'
+import { friendlyError, money, setBusinessDayStart } from './lib/format'
 import { Shell } from './components/Shell'
 import { PayForm } from './components/PayForm'
 
@@ -15,6 +15,15 @@ const Sales = lazy(() => import('./pages/Sales'))
 const Expenses = lazy(() => import('./pages/Expenses'))
 const Customers = lazy(() => import('./pages/Customers'))
 const Suppliers = lazy(() => import('./pages/Suppliers'))
+const Purchases = lazy(() => import('./pages/Purchases'))
+const Categories = lazy(() => import('./pages/Categories'))
+const Credit = lazy(() => import('./pages/Credit'))
+const Creditors = lazy(() => import('./pages/Creditors'))
+const Loyalty = lazy(() => import('./pages/Loyalty'))
+const Accounts = lazy(() => import('./pages/Accounts'))
+const Tax = lazy(() => import('./pages/Tax'))
+const ProfitLoss = lazy(() => import('./pages/ProfitLoss'))
+const Glovo = lazy(() => import('./pages/Glovo'))
 const Reports = lazy(() => import('./pages/Reports'))
 const Staff = lazy(() => import('./pages/Staff'))
 const SubscriptionPage = lazy(() => import('./pages/Subscription'))
@@ -45,16 +54,16 @@ async function provisionAccount(user: User): Promise<Membership[]> {
 
 function Landing() {
   return <main className="landing">
-    <nav className="landing-nav"><strong>Radari POS</strong><div className="nav-links"><Link to="/login">Sign in</Link><Link className="nav-cta" to="/signup">Create account</Link></div></nav>
-    <section className="hero"><span className="eyebrow">Built for Kenyan businesses</span><h1>See every sale. Know every stock level.</h1>
-      <p>Sell, track stock, record expenses and credit, manage staff and see your profit — from any phone or computer, for KSh 1,500 every 30 days.</p>
-      <Link className="primary" to="/signup">Start using Radari</Link></section>
+    <nav className="landing-nav"><strong>Radari</strong><div className="nav-links"><Link to="/login">Sign in</Link><Link className="nav-cta" to="/signup">Create account</Link></div></nav>
+    <section className="hero"><span className="eyebrow">Point of sale and business management</span><h1>Sales, stock and profit for Kenyan businesses.</h1>
+      <p>Run your till, stock, credit, expenses, staff and VAT records from any phone or computer. KSh 1,500 every 30 days, paid by M-Pesa.</p>
+      <Link className="primary" to="/signup">Create your account</Link></section>
     <section className="feature-grid">
-      {[['🛒', 'Fast till', 'Barcode search, M-Pesa, cash and credit sales, printable receipts.'],
-        ['📦', 'Stock control', 'Low-stock alerts, deliveries, adjustments and a full audit trail.'],
-        ['📊', 'Real profit', 'Daily profit after cost of goods, VAT and expenses.'],
-        ['🪪', 'Staff roles', 'Cashiers sell; only owners and admins can void or see reports.']].map(([icon, title, text]) =>
-        <div key={title}><span aria-hidden="true">{icon}</span><strong>{title}</strong><p>{text}</p></div>)}
+      {[['Point of sale', 'Cash, M-Pesa, card, credit and split payments with printable receipts.'],
+        ['Stock control', 'Purchases, batches, expiry dates, adjustments and a full audit trail.'],
+        ['Finance', 'Expenses, creditors, chart of accounts, profit and loss, and VAT returns.'],
+        ['Staff and roles', 'Owners, admins, stock managers, cashiers and accountants each see only what they need.']].map(([title, text]) =>
+        <div key={title}><strong>{title}</strong><p>{text}</p></div>)}
     </section>
   </main>
 }
@@ -184,11 +193,13 @@ function AccountRoute({ session }: { session: Session | null }) {
       const membership = (selected && memberships.find(m => m.businessId === selected)) || pickMembership(memberships)
       if (!membership) throw new NoBusinessError('No business found for this account.')
       const [businessResult, subscriptionResult] = await Promise.all([
-        supabase.from('businesses').select('id,name,phone,email,address,kra_pin,receipt_footer,timezone').eq('id', membership.businessId).single(),
+        supabase.from('businesses').select(BUSINESS_COLUMNS).eq('id', membership.businessId).single(),
         supabase.from('subscriptions').select('status,current_period_start,current_period_end,grace_ends_at').eq('business_id', membership.businessId).maybeSingle(),
       ])
       if (businessResult.error) throw businessResult.error
-      setLoaded({ memberships, membership: { ...membership, businessName: businessResult.data.name }, business: businessResult.data as Business, subscription: subscriptionResult.data as Subscription | null })
+      const business = businessResult.data as unknown as Business
+      applyBranding(business)
+      setLoaded({ memberships, membership: { ...membership, businessName: businessResult.data.name }, business, subscription: subscriptionResult.data as Subscription | null })
     } catch (caught) { setError(caught instanceof NoBusinessError ? caught.message : friendlyError(caught, 'Your account could not be loaded.')) }
     finally { setLoading(false) }
   }, [session?.user, selected]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -196,7 +207,7 @@ function AccountRoute({ session }: { session: Session | null }) {
   useEffect(() => { refresh() }, [userId, selected]) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!session) return <Navigate to="/login" replace />
-  if (loading) return <main className="centered"><div className="loader" role="status"><span className="spinner" aria-hidden="true" /> Loading your business…</div></main>
+  if (loading) return <main className="centered"><div className="loader" role="status"><span className="spinner" aria-hidden="true" /> Loading your business</div></main>
   if (error || !loaded) return <main className="centered"><section className="card"><div className="notice error" role="alert">{error || 'Business account not found'}</div>
     <button type="button" className="primary submit" onClick={() => { setLoading(true); refresh() }}>Try again</button>
     <button className="text-button" onClick={() => supabase.auth.signOut()}>Sign out</button></section></main>
@@ -213,6 +224,15 @@ function AccountRoute({ session }: { session: Session | null }) {
         <Route path="expenses" element={<Guard permission="expenses"><Expenses /></Guard>} />
         <Route path="customers" element={<Guard permission="customers"><Customers /></Guard>} />
         <Route path="suppliers" element={<Guard permission="suppliers"><Suppliers /></Guard>} />
+        <Route path="purchases" element={<Guard permission="purchases"><Purchases /></Guard>} />
+        <Route path="categories" element={<Guard permission="categories"><Categories /></Guard>} />
+        <Route path="credit" element={<Guard permission="credit"><Credit /></Guard>} />
+        <Route path="creditors" element={<Guard permission="creditors"><Creditors /></Guard>} />
+        <Route path="loyalty" element={<Guard permission="loyalty"><Loyalty /></Guard>} />
+        <Route path="accounts" element={<Guard permission="accounting"><Accounts /></Guard>} />
+        <Route path="tax" element={<Guard permission="tax"><Tax /></Guard>} />
+        <Route path="profit-loss" element={<Guard permission="profit"><ProfitLoss /></Guard>} />
+        <Route path="glovo" element={<Guard permission="glovo"><Glovo /></Guard>} />
         <Route path="reports" element={<Guard permission="reports"><Reports /></Guard>} />
         <Route path="staff" element={<Guard permission="staff"><Staff /></Guard>} />
         <Route path="subscription" element={<SubscriptionPage />} />
@@ -221,6 +241,17 @@ function AccountRoute({ session }: { session: Session | null }) {
       </Route>
     </Routes>
   </AccountProvider>
+}
+
+/** Applies the business's brand colour and business-day start hour. */
+function applyBranding(business: Business) {
+  const root = document.documentElement
+  const colour = business.theme_color && /^#[0-9a-f]{6}$/i.test(business.theme_color) ? business.theme_color : '#0f4c81'
+  root.style.setProperty('--accent', colour)
+  const [r, g, b] = [1, 3, 5].map(i => parseInt(colour.slice(i, i + 2), 16))
+  root.style.setProperty('--accent-ink', (r * 299 + g * 587 + b * 114) / 1000 > 160 ? '#111827' : '#ffffff')
+  root.style.setProperty('--accent-soft', `rgba(${r}, ${g}, ${b}, 0.08)`)
+  setBusinessDayStart(Number(business.day_start_hour || 0))
 }
 
 function ScrollToTop() {

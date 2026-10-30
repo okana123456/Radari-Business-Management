@@ -4,7 +4,7 @@ import { useAccount } from '../lib/account'
 import { dateTime, downloadCsv, friendlyError, money, paymentLabel, titleCase } from '../lib/format'
 import { Empty, ErrorNotice, Loading, Modal, PageHeader, Stat } from '../components/ui'
 
-type Customer = { id: string; name: string; phone: string | null; email: string | null; notes: string | null; credit_limit: number; active: boolean; balance: number; last_activity_at: string | null }
+type Customer = { id: string; name: string; phone: string | null; email: string | null; notes: string | null; credit_limit: number; active: boolean; balance: number; last_activity_at: string | null; loyalty_points: number }
 type Entry = { id: string; entry_type: string; amount: number; payment_method: string | null; note: string | null; created_at: string; created_by: string | null }
 
 export default function Customers() {
@@ -18,7 +18,7 @@ export default function Customers() {
 
   const load = useCallback(async () => {
     setError('')
-    let query = supabase.from('customer_balances').select('id,name,phone,email,notes,credit_limit,active,balance,last_activity_at')
+    let query = supabase.from('customer_balances').select('id,name,phone,email,notes,credit_limit,active,balance,last_activity_at,loyalty_points')
       .eq('business_id', businessId).order('name').limit(300)
     const term = search.trim().replace(/[%,()]/g, '')
     if (term) query = query.or(`name.ilike.%${term}%,phone.ilike.%${term}%`)
@@ -35,7 +35,7 @@ export default function Customers() {
   return <>
     <PageHeader title="Customers" subtitle="Customer details and credit (debts)" actions={<>
       <button type="button" className="button secondary" disabled={!rows?.length} onClick={() => downloadCsv('radari-customers.csv', [['Name', 'Phone', 'Email', 'Credit limit', 'Balance owed', 'Active'], ...(rows || []).map(c => [c.name, c.phone, c.email, c.credit_limit, c.balance, c.active ? 'yes' : 'no'])])}>Export CSV</button>
-      <button type="button" className="button" onClick={() => setEditing('new')}>+ New customer</button>
+      <button type="button" className="button" onClick={() => setEditing('new')}>Add customer</button>
     </>} />
     {rows && <div className="stat-grid">
       <Stat label={search || owingOnly ? 'Owed (shown customers)' : 'Total owed to you'} value={money(owed)} tone={owed ? 'warning' : undefined} />
@@ -49,12 +49,13 @@ export default function Customers() {
     {!rows && !error ? <Loading /> : rows && rows.length === 0 ? <Empty title={search || owingOnly ? 'No customers match' : 'No customers yet'}>
       <p>Customers are added here or at the till when selling on credit.</p></Empty> : rows &&
       <div className="table-wrap"><table className="data-table clickable">
-        <thead><tr><th>Customer</th><th>Phone</th><th className="num">Credit limit</th><th className="num">Balance</th><th>Last activity</th></tr></thead>
+        <thead><tr><th>Customer</th><th>Phone</th><th className="num">Credit limit</th><th className="num">Balance</th><th className="num">Points</th><th>Last activity</th></tr></thead>
         <tbody>{rows.map(c => <tr key={c.id} onClick={() => setOpen(c)} tabIndex={0} onKeyDown={e => { if (e.key === 'Enter') setOpen(c) }} className={c.active ? '' : 'row-muted'}>
           <td data-label="Customer"><strong>{c.name}</strong>{!c.active && <small>Archived</small>}</td>
           <td data-label="Phone">{c.phone || '—'}</td>
           <td data-label="Credit limit" className="num">{c.credit_limit ? money(c.credit_limit) : 'No limit'}</td>
           <td data-label="Balance" className={`num ${c.balance > 0 ? 'neg' : ''}`}>{c.balance > 0 ? money(c.balance) : c.balance < 0 ? `${money(-c.balance)} credit` : '—'}</td>
+          <td data-label="Points" className="num">{Number(c.loyalty_points || 0)}</td>
           <td data-label="Last activity">{c.last_activity_at ? dateTime(c.last_activity_at) : '—'}</td>
         </tr>)}</tbody>
       </table></div>}

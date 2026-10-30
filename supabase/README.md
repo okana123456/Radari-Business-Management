@@ -10,6 +10,7 @@ Run these in the Supabase SQL Editor, in order. Never edit a migration that has 
 | `migrations/0002_onboarding_and_subscriptions.sql` | Business provisioning, subscription activation, reminders |
 | `migrations/0003_pos_checkout.sql` | Product categories, first checkout function, Realtime for products |
 | `migrations/0004_business_management.sql` | Staff roles, hardened checkout, stock audit trail, void, purchases, expenses, customers and credit, suppliers, staff invitations, settings, reports, payment verification columns |
+| `migrations/0005_operations_and_accounting.sql` | Card and split payments, discounts and price floor, loyalty points, sell by serving, batches and expiry, tax categories, credit due dates, creditors, categories, chart of accounts and journal, M-Pesa and branding settings, extended reports |
 
 Check what is already applied:
 

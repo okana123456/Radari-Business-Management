@@ -21,16 +21,25 @@ export const isoDay = (value: Date = new Date()) => {
 
 export type DateRange = { from: string; to: string } // inclusive local days, yyyy-mm-dd
 
-/** Converts an inclusive local day range into [start, end) timestamps for the database. */
+let businessDayStartHour = 0
+/** Sales made before this hour count towards the previous business day (bars, restaurants). */
+export const setBusinessDayStart = (hour: number) => { businessDayStartHour = Math.min(9, Math.max(0, Math.floor(hour || 0))) }
+
+/** Converts an inclusive business-day range into [start, end) timestamps for the database. */
 export const rangeToTimestamps = (range: DateRange) => {
   const start = new Date(`${range.from}T00:00:00`)
   const end = new Date(`${range.to}T00:00:00`)
   end.setDate(end.getDate() + 1)
+  start.setHours(start.getHours() + businessDayStartHour)
+  end.setHours(end.getHours() + businessDayStartHour)
   return { start: start.toISOString(), end: end.toISOString() }
 }
 
+/** Today's business date, honouring the business-day start hour. */
+export const businessToday = () => { const d = new Date(); d.setHours(d.getHours() - businessDayStartHour); return isoDay(d) }
+
 export const presetRange = (preset: string): DateRange => {
-  const today = new Date()
+  const today = new Date(); today.setHours(today.getHours() - businessDayStartHour)
   const day = (offset: number) => { const d = new Date(today); d.setDate(d.getDate() + offset); return isoDay(d) }
   switch (preset) {
     case 'yesterday': return { from: day(-1), to: day(-1) }
@@ -42,6 +51,8 @@ export const presetRange = (preset: string): DateRange => {
       to: isoDay(new Date(today.getFullYear(), today.getMonth(), 0)),
     }
     case '30days': return { from: day(-29), to: day(0) }
+    case 'quarter': { const q = Math.floor(today.getMonth() / 3) * 3; return { from: isoDay(new Date(today.getFullYear(), q, 1)), to: day(0) } }
+    case 'year': return { from: isoDay(new Date(today.getFullYear(), 0, 1)), to: day(0) }
     default: return { from: day(0), to: day(0) }
   }
 }
@@ -63,7 +74,7 @@ export function friendlyError(error: unknown, fallback = 'Something went wrong. 
 export const titleCase = (value: string) => value.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
 
 export const paymentLabel = (method: string) =>
-  ({ cash: 'Cash', mpesa: 'M-Pesa', credit: 'Credit', split: 'Split', bank: 'Bank', other: 'Other' }[method] || titleCase(method))
+  ({ cash: 'Cash', mpesa: 'M-Pesa', card: 'Card', credit: 'Credit', split: 'Split', bank: 'Bank', other: 'Other' }[method] || titleCase(method))
 
 export function downloadCsv(filename: string, rows: (string | number | null | undefined)[][]) {
   const escape = (cell: string | number | null | undefined) => {
@@ -80,3 +91,23 @@ export function downloadCsv(filename: string, rows: (string | number | null | un
 
 export const newReference = () =>
   (crypto.randomUUID ? crypto.randomUUID() : 'xxxxxxxx-xxxx-4xxx-8xxx-xxxxxxxxxxxx'.replace(/x/g, () => Math.floor(Math.random() * 16).toString(16)))
+
+export const taxCategoryLabel: Record<string, string> = { standard: 'Standard (16%)', reduced: 'Reduced (8%)', zero_rated: 'Zero rated (0%)', exempt: 'Exempt' }
+export const taxCategoryRate: Record<string, number> = { standard: 16, reduced: 8, zero_rated: 0, exempt: 0 }
+
+export const BUSINESS_TYPES: [string, string][] = [
+  ['retail', 'Retail / supermarket / shop'], ['pharmacy', 'Pharmacy / chemist'], ['hardware', 'Hardware / building materials'],
+  ['agrovet', 'Agrovet / farm supplies'], ['electronics', 'Electronics / phone shop'], ['restaurant', 'Restaurant / hotel / food'],
+  ['bar', 'Bar / wines and spirits'], ['salon', 'Salon / beauty'], ['wholesale', 'Wholesale / distributor'], ['general', 'General business'],
+]
+
+const COMMON_UNITS = ['Piece', 'Packet', 'Box', 'Carton', 'Dozen', 'Pair', 'Set', 'Bundle', 'Pack', 'Unit']
+export const UNITS_BY_TYPE: Record<string, string[]> = {
+  pharmacy: ['Tablet', 'Capsule', 'Strip', 'Blister pack', 'Bottle', 'Syrup bottle', 'Suspension', 'Drops', 'Ampoule', 'Vial', 'Injection', 'Tube', 'Cream', 'Ointment', 'Gel', 'Lotion', 'Spray', 'Inhaler', 'Sachet', 'Test kit', 'Box', 'Piece'],
+  hardware: ['Piece', 'Kg', 'Metre', 'Foot', 'Roll', 'Bag', 'Sheet', 'Length', 'Litre', 'Tin', 'Box', 'Set', 'Pair'],
+  agrovet: ['Kg', 'Gram', 'Bag', 'Litre', 'Ml', 'Sachet', 'Packet', 'Bottle', 'Tin', 'Piece'],
+  bar: ['Bottle', 'Can', 'Glass', 'Crate', 'Carton', 'Tot', 'Litre', 'Piece'],
+  restaurant: ['Plate', 'Portion', 'Cup', 'Glass', 'Bottle', 'Can', 'Piece', 'Kg', 'Litre'],
+  retail: [...COMMON_UNITS, 'Kg', 'Gram', 'Litre', 'Ml', 'Bottle', 'Can', 'Roll', 'Sachet', 'Tin'],
+}
+export const unitsFor = (businessType: string) => UNITS_BY_TYPE[businessType] || UNITS_BY_TYPE.retail

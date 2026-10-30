@@ -1,9 +1,10 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { useAccount } from '../lib/account'
 import { can } from '../lib/roles'
-import { DateRange, dateOnly, downloadCsv, friendlyError, isoDay, money, paymentLabel, presetRange } from '../lib/format'
-import { DateRangePicker, Empty, ErrorNotice, Loading, Modal, PageHeader, RankBars, Stat } from '../components/ui'
+import { businessToday, DateRange, dateOnly, downloadCsv, friendlyError, isoDay, money, paymentLabel, presetRange } from '../lib/format'
+import { BarChart, DateRangePicker, Empty, ErrorNotice, Loading, Modal, PageHeader, RankBars, Stat } from '../components/ui'
 
 type Expense = { id: string; category: string; description: string | null; amount: number; payment_method: string; expense_date: string; reference: string | null; created_by: string | null }
 const DEFAULT_CATEGORIES = ['Rent', 'Salaries & wages', 'Electricity', 'Water', 'Transport', 'Airtime & internet', 'Repairs', 'Licences & permits', 'Supplies', 'Bank & M-Pesa charges', 'Marketing', 'Other']
@@ -15,7 +16,30 @@ export default function Expenses() {
   const [rows, setRows] = useState<Expense[] | null>(null)
   const [error, setError] = useState('')
   const [category, setCategory] = useState('All')
-  const [editing, setEditing] = useState<Expense | 'new' | null>(null)
+  const [params, setParams] = useSearchParams()
+  const [editing, setEditing] = useState<Expense | 'new' | null>(params.get('new') ? 'new' : null)
+  const [history, setHistory] = useState<{ expense_date: string; amount: number }[]>([])
+
+  const loadHistory = useCallback(async () => {
+    const since = new Date(); since.setMonth(since.getMonth() - 5, 1)
+    const { data } = await supabase.from('expenses').select('expense_date,amount').eq('business_id', businessId).gte('expense_date', isoDay(since)).limit(5000)
+    setHistory((data || []).map(r => ({ expense_date: r.expense_date as string, amount: Number(r.amount) })))
+  }, [businessId])
+  useEffect(() => { loadHistory() }, [loadHistory])
+  const today = businessToday()
+  const todayTotal = history.filter(h => h.expense_date === today).reduce((s, h) => s + h.amount, 0)
+  const monthTotal = history.filter(h => h.expense_date.slice(0, 7) === today.slice(0, 7)).reduce((s, h) => s + h.amount, 0)
+  const months = useMemo(() => {
+    const out: { key: string; label: string; value: number }[] = []
+    const d = new Date(); d.setDate(1)
+    for (let i = 5; i >= 0; i--) {
+      const m = new Date(d.getFullYear(), d.getMonth() - i, 1)
+      const key = `${m.getFullYear()}-${String(m.getMonth() + 1).padStart(2, '0')}`
+      out.push({ key, label: m.toLocaleDateString('en-KE', { month: 'short' }), value: history.filter(h => h.expense_date.startsWith(key)).reduce((s, h) => s + h.amount, 0) })
+    }
+    return out
+  }, [history])
+  function closeEditor() { setEditing(null); if (params.get('new')) { params.delete('new'); setParams(params, { replace: true }) } }
 
   const load = useCallback(async () => {
     setRows(null); setError('')
@@ -39,23 +63,28 @@ export default function Expenses() {
   async function remove(expense: Expense) {
     if (!window.confirm(`Delete the ${money(expense.amount)} ${expense.category} expense?`)) return
     const { error: deleteError } = await supabase.from('expenses').delete().eq('id', expense.id).eq('business_id', businessId)
-    if (deleteError) setError(friendlyError(deleteError)); else load()
+    if (deleteError) setError(friendlyError(deleteError)); else { load(); loadHistory() }
   }
 
   return <>
     <PageHeader title="Expenses" subtitle="Running costs that reduce your profit" actions={<>
       <button type="button" className="button secondary" disabled={!shown.length} onClick={() => downloadCsv(`radari-expenses-${range.from}-to-${range.to}.csv`, [['Date', 'Category', 'Description', 'Amount', 'Paid by', 'Reference', 'Recorded by'], ...shown.map(e => [e.expense_date, e.category, e.description, e.amount, paymentLabel(e.payment_method), e.reference, e.created_by ? staffName(e.created_by) : ''])])}>Export CSV</button>
-      <button type="button" className="button" onClick={() => setEditing('new')}>+ Record expense</button>
+      <button type="button" className="button" onClick={() => setEditing('new')}>Add expense</button>
     </>} />
     <DateRangePicker value={range} onChange={setRange} />
     <ErrorNotice message={error} onRetry={load} />
     {!rows && !error ? <Loading /> : rows && <>
       <div className="stat-grid">
-        <Stat label={category === 'All' ? 'Total expenses' : category} value={money(total)} hint={`${shown.length} entr${shown.length === 1 ? 'y' : 'ies'}`} />
+        <Stat label="Today" value={money(todayTotal)} />
+        <Stat label="This month" value={money(monthTotal)} />
+        <Stat label={category === 'All' ? 'Selected period' : `${category}, selected period`} value={money(total)} hint={`${shown.length} entr${shown.length === 1 ? 'y' : 'ies'}`} />
         {byCategory[0] && <Stat label="Largest category" value={byCategory[0][0]} hint={money(byCategory[0][1])} />}
       </div>
+      <div className="panel-grid">
+        <section className="panel"><h2>Monthly trend</h2><BarChart label="Expenses per month" format={money} data={months} /></section>
+        {byCategory.length > 0 && <section className="panel"><h2>By category</h2><RankBars format={money} rows={byCategory.map(([key, value]) => ({ key, label: key, value }))} /></section>}
+      </div>
       {rows.length >= LIMIT && <p className="hint">Showing the latest {LIMIT} expenses. Choose a shorter period to see everything.</p>}
-      {byCategory.length > 1 && <section className="panel"><h2>By category</h2><RankBars format={money} rows={byCategory.map(([key, value]) => ({ key, label: key, value }))} /></section>}
       <div className="toolbar"><select value={category} onChange={e => setCategory(e.target.value)} aria-label="Category"><option>All</option>{byCategory.map(([c]) => <option key={c}>{c}</option>)}</select></div>
       {shown.length === 0 ? <Empty title="No expenses recorded in this period"><button type="button" className="button" onClick={() => setEditing('new')}>Record an expense</button></Empty> :
         <div className="table-wrap"><table className="data-table">
@@ -70,7 +99,7 @@ export default function Expenses() {
           </tr>)}</tbody>
         </table></div>}
     </>}
-    {editing && <ExpenseForm expense={editing === 'new' ? null : editing} categories={categories} userId={user.id} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); load() }} />}
+    {editing && <ExpenseForm expense={editing === 'new' ? null : editing} categories={categories} userId={user.id} onClose={closeEditor} onSaved={() => { closeEditor(); load(); loadHistory() }} />}
   </>
 }
 
@@ -95,7 +124,7 @@ function ExpenseForm({ expense, categories, userId, onClose, onSaved }: { expens
     <form onSubmit={submit}>
       <div className="form-pair">
         <label>Amount (KSh)<input name="amount" type="number" min="0.01" step="0.01" required defaultValue={expense?.amount} autoFocus /></label>
-        <label>Date<input name="date" type="date" required max={isoDay()} defaultValue={expense?.expense_date || isoDay()} /></label>
+        <label>Date<input name="date" type="date" required max={businessToday()} defaultValue={expense?.expense_date || businessToday()} /></label>
       </div>
       <label>Category<input name="category" list="expense-categories" required maxLength={60} defaultValue={expense?.category} placeholder="e.g. Rent" /></label>
       <datalist id="expense-categories">{categories.map(c => <option key={c} value={c} />)}</datalist>
@@ -105,7 +134,7 @@ function ExpenseForm({ expense, categories, userId, onClose, onSaved }: { expens
         <label>Reference<input name="reference" maxLength={60} defaultValue={expense?.reference || ''} placeholder="Receipt / M-Pesa code" /></label>
       </div>
       <ErrorNotice message={error} />
-      <button className="button" disabled={busy}>{busy ? 'Saving…' : 'Save expense'}</button>
+      <button className="button" disabled={busy}>{busy ? 'Saving' : 'Save expense'}</button>
     </form>
   </Modal>
 }

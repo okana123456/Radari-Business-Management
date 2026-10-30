@@ -47,6 +47,8 @@ await t('0003 allowed overselling with duplicate cart lines', async () => {
 
 await db.exec(sql('0004_business_management.sql'))
 await db.exec(sql('0004_business_management.sql')) // must be re-runnable
+await db.exec(sql('0005_operations_and_accounting.sql'))
+await db.exec(sql('0005_operations_and_accounting.sql'))
 await db.exec('grant all on all tables in schema public to service_role; grant all on all functions in schema public to service_role;')
 
 console.log('\nAfter 0004:')
@@ -186,7 +188,7 @@ await t('customer payment reduces balance; overpayment rejected', async () => {
 await t('void restores stock once and reverses credit', async () => {
   const sale = await one(null, `select id from sales where customer_id=$1`, [cust])
   const before = await one(null, `select stock from products where id=$1`, [p1])
-  await rejects(q(U.cashierA, `select void_sale($1,$2,'customer returned')`, [A, sale.id]), /Only the owner/)
+  await rejects(q(U.cashierA, `select void_sale($1,$2,'customer returned')`, [A, sale1]), /Only the owner/) // not their latest sale
   await rejects(q(U.ownerA, `select void_sale($1,$2,'x')`, [A, sale.id]), /reason/)
   await q(U.ownerA, `select void_sale($1,$2,'customer returned goods')`, [A, sale.id])
   await rejects(q(U.ownerA, `select void_sale($1,$2,'again please')`, [A, sale.id]), /already been voided/)
@@ -274,6 +276,126 @@ await t('payment confirmation stays idempotent', async () => {
   const end1 = await one(null, `select current_period_end e from subscriptions where business_id=$1`, [A])
   const days = (new Date(end1.e) - new Date(end0.e)) / 86400000
   assert(first.r === true && second.r === false && Math.round(days) === 30, JSON.stringify({ first, second, days }))
+})
+
+console.log('\n0005 features:')
+await q(U.ownerA, `select update_staff_member($1,$2,'cashier','active')`, [A, U.cashierA])
+let pServe
+await t('split payment: cash + M-Pesa + card recorded per method', async () => {
+  const r = await one(U.cashierA, `select * from complete_pos_sale($1,'cash',$2,null,null,null,$3)`, [A, JSON.stringify([{ product_id: p1, quantity: 2 }]),
+    JSON.stringify([{ method: 'cash', amount: 100 }, { method: 'mpesa', amount: 150, reference: 'SFK1' }, { method: 'card', amount: 50 }])])
+  const s = await one(null, `select payment_method from sales where id=$1`, [r.sale_id])
+  const pays = await one(null, `select count(*)::int n, sum(amount) t from sale_payments where sale_id=$1`, [r.sale_id])
+  assert(s.payment_method === 'split' && pays.n === 3 && Number(pays.t) === 300, JSON.stringify({ s, pays }))
+})
+await t('payments must equal the amount due', async () => {
+  await rejects(q(U.cashierA, `select * from complete_pos_sale($1,'cash',$2,null,null,null,$3)`, [A, JSON.stringify([{ product_id: p1, quantity: 1 }]),
+    JSON.stringify([{ method: 'cash', amount: 100 }])]), /must equal/)
+})
+await t('discounts respect the minimum price floor and cannot raise prices', async () => {
+  await q(U.ownerA, `update businesses set min_price_percent=90 where id=$1`, [A])
+  await rejects(q(U.cashierA, `select * from complete_pos_sale($1,'cash',$2)`, [A, JSON.stringify([{ product_id: p1, quantity: 1, unit_price: 100 }])]), /below KSh 135/)
+  await rejects(q(U.cashierA, `select * from complete_pos_sale($1,'cash',$2)`, [A, JSON.stringify([{ product_id: p1, quantity: 1, unit_price: 200 }])]), /cannot be raised/)
+  const r = await one(U.cashierA, `select * from complete_pos_sale($1,'cash',$2)`, [A, JSON.stringify([{ product_id: p1, quantity: 1, unit_price: 140 }])])
+  const s = await one(null, `select total, discount_total from sales where id=$1`, [r.sale_id])
+  assert(Number(s.total) === 140 && Number(s.discount_total) === 10, JSON.stringify(s))
+  await q(U.ownerA, `update businesses set min_price_percent=0 where id=$1`, [A])
+})
+let loyalCust
+await t('loyalty: earn on sale, redeem as discount, reverse on void', async () => {
+  await q(U.ownerA, `update businesses set loyalty_enabled=true, loyalty_spend_per_point=100, loyalty_point_value=1 where id=$1`, [A])
+  loyalCust = (await one(U.cashierA, `insert into customers (business_id,name,phone) values ($1,'Loyal Lucy','0700111222') returning id`, [A])).id
+  const r1 = await one(U.cashierA, `select * from complete_pos_sale($1,'cash',$2,null,$3)`, [A, JSON.stringify([{ product_id: p1, quantity: 2 }]), loyalCust])
+  let pts = await one(null, `select loyalty_points from customer_balances where id=$1`, [loyalCust])
+  assert(pts.loyalty_points === 3, 'earned ' + pts.loyalty_points)
+  await rejects(q(U.cashierA, `select * from complete_pos_sale($1,'cash',$2,null,$3,null,null,null,5)`, [A, JSON.stringify([{ product_id: p1, quantity: 1 }]), loyalCust]), /only has 3 points/)
+  const r2 = await one(U.cashierA, `select * from complete_pos_sale($1,'cash',$2,null,$3,null,null,null,3)`, [A, JSON.stringify([{ product_id: p1, quantity: 1 }]), loyalCust])
+  assert(Number(r2.total) === 147, 'total after points ' + r2.total)
+  pts = await one(null, `select loyalty_points from customer_balances where id=$1`, [loyalCust])
+  assert(pts.loyalty_points === 1, 'after redeem ' + pts.loyalty_points) // 3 - 3 + 1 earned on 147
+  await q(U.cashierA, `select void_sale($1,$2,'wrong customer')`, [A, r2.sale_id]) // own last sale within 15 min
+  pts = await one(null, `select loyalty_points from customer_balances where id=$1`, [loyalCust])
+  assert(pts.loyalty_points === 3, 'after void ' + pts.loyalty_points)
+  await rejects(q(U.cashierA, `select void_sale($1,$2,'older one')`, [A, r1.sale_id]), /Only the owner/)
+})
+await t('sell by serving deducts a fraction of the bottle', async () => {
+  pServe = (await one(U.ownerA, `insert into products (business_id,name,category,cost,price,stock,unit,container_ml,serving_ml,serving_price) values ($1,'Whisky 750ml','Bar',1500,3000,2,'Bottle',750,25,150) returning id`, [A])).id
+  const r = await one(U.cashierA, `select * from complete_pos_sale($1,'cash',$2)`, [A, JSON.stringify([{ product_id: pServe, quantity: 3, mode: 'serving' }])])
+  const p = await one(null, `select stock from products where id=$1`, [pServe])
+  const i = await one(null, `select stock_quantity, line_total, unit_cost from sale_items where sale_id=$1`, [r.sale_id])
+  assert(Number(r.total) === 450 && Number(p.stock) === 1.9 && Number(i.stock_quantity) === 0.1 && Number(i.unit_cost) === 50, JSON.stringify({ r, p, i }))
+  await rejects(q(U.cashierA, `select * from complete_pos_sale($1,'cash',$2)`, [A, JSON.stringify([{ product_id: p2, quantity: 1, mode: 'serving' }])]), /not set up to sell by serving/)
+})
+await t('cash + credit split with due date; credit status allocates payments oldest first', async () => {
+  const c = (await one(U.cashierA, `insert into customers (business_id,name) values ($1,'Credit Carol') returning id`, [A])).id
+  const due = new Date(Date.now() + 7 * 864e5).toISOString().slice(0, 10)
+  const s1 = await one(U.cashierA, `select * from complete_pos_sale($1,'cash',$2,null,$3,null,$4,$5)`, [A, JSON.stringify([{ product_id: p1, quantity: 2 }]), c,
+    JSON.stringify([{ method: 'cash', amount: 100 }, { method: 'credit', amount: 200 }]), due])
+  await rejects(q(U.cashierA, `select * from complete_pos_sale($1,'cash',$2,null,null,null,$3)`, [A, JSON.stringify([{ product_id: p1, quantity: 1 }]), JSON.stringify([{ method: 'credit', amount: 150 }])]), /Select a customer/)
+  const s2 = await one(U.cashierA, `select * from complete_pos_sale($1,'credit',$2,null,$3)`, [A, JSON.stringify([{ product_id: p1, quantity: 1 }]), c])
+  await q(U.cashierA, `select record_customer_payment($1,$2,250,'mpesa')`, [A, c])
+  const rows = (await q(U.cashierA, `select * from credit_sales_status($1) where customer_id=$2 order by sold_at`, [A, c])).rows
+  assert(rows.length === 2 && rows[0].status === 'paid' && Number(rows[1].paid) === 50 && Number(rows[1].balance) === 100 && rows[1].status === 'pending', JSON.stringify(rows))
+  assert(rows[0].due_date && rows[0].items.includes('Sugar 1kg'), JSON.stringify(rows[0]))
+  await rejects(q(U.stockA, `select * from credit_sales_status($1)`, [A]), /permission/)
+})
+await t('creditors: record debt and payments, no overpayment', async () => {
+  const id = (await one(U.accountantA, `insert into creditors (business_id,name,amount) values ($1,'Landlord',10000) returning id`, [A])).id
+  const b = await one(U.accountantA, `select record_creditor_payment($1,$2,4000,'bank') b`, [A, id])
+  assert(Number(b.b) === 6000)
+  await rejects(q(U.accountantA, `select record_creditor_payment($1,$2,7000,'bank')`, [A, id]), /more than/)
+  await rejects(q(U.cashierA, `insert into creditors (business_id,name,amount) values ($1,'X',1)`, [A]), /row-level security/)
+  const v = await one(U.ownerA, `select paid, balance from creditor_balances where id=$1`, [id])
+  assert(Number(v.paid) === 4000 && Number(v.balance) === 6000)
+})
+await t('categories: create, rename moves products, delete moves to General', async () => {
+  await q(U.stockA, `insert into product_categories (business_id,name) values ($1,'Snacks')`, [A])
+  await q(U.stockA, `select rename_category($1,'Grocery','Dry goods')`, [A])
+  const p = await one(null, `select category from products where id=$1`, [p1])
+  assert(p.category === 'Dry goods', p.category)
+  const moved = await one(U.stockA, `select delete_category($1,'Dry goods') n`, [A])
+  assert(moved.n >= 1 && (await one(null, `select category from products where id=$1`, [p1])).category === 'General')
+  await rejects(q(U.cashierA, `select rename_category($1,'General','X')`, [A]), /permission/)
+})
+await t('bulk VAT update by tax category (owner/admin only)', async () => {
+  await rejects(q(U.stockA, `select bulk_set_tax_category($1,'exempt')`, [A]), /Only the owner/)
+  const n = await one(U.ownerA, `select bulk_set_tax_category($1,'zero_rated') n`, [A])
+  const p = await one(null, `select vat_rate, tax_category from products where id=$1`, [p1])
+  assert(n.n >= 3 && Number(p.vat_rate) === 0 && p.tax_category === 'zero_rated')
+  await q(U.ownerA, `select bulk_set_tax_category($1,'standard')`, [A])
+})
+await t('purchase with batch, expiry, invoice total and new selling price', async () => {
+  const exp = new Date(Date.now() + 20 * 864e5).toISOString().slice(0, 10)
+  const id = (await one(U.stockA, `select record_purchase($1,null,$2,'INV-77',0,current_date,null,1250) id`, [A,
+    JSON.stringify([{ product_id: p1, quantity: 10, unit_cost: 120, batch_number: 'B42', expiry_date: exp, selling_price: 160 }])])).id
+  const pr = await one(null, `select total, items_total, amount_paid from purchases where id=$1`, [id])
+  const p = await one(null, `select price, batch_number, expiry_date from products where id=$1`, [p1])
+  assert(Number(pr.total) === 1250 && Number(pr.items_total) === 1200 && Number(pr.amount_paid) === 0, JSON.stringify(pr))
+  assert(Number(p.price) === 160 && p.batch_number === 'B42' && p.expiry_date, JSON.stringify(p))
+})
+await t('chart of accounts and journal: balances by account type, no cross-business accounts', async () => {
+  const cash = (await one(U.accountantA, `insert into accounts (business_id,code,name,account_type,opening_balance) values ($1,'1000','Cash','asset',5000) returning id`, [A])).id
+  const rent = (await one(U.accountantA, `insert into accounts (business_id,code,name,account_type) values ($1,'6000','Rent','expense') returning id`, [A])).id
+  await q(U.accountantA, `insert into journal_entries (business_id,reference,description,debit_account_id,credit_account_id,amount,created_by) values ($1,'JE1','October rent',$2,$3,2000,$4)`, [A, rent, cash, U.accountantA])
+  const rows = (await q(U.accountantA, `select code, balance from account_balances where business_id=$1 order by code`, [A])).rows
+  assert(Number(rows[0].balance) === 3000 && Number(rows[1].balance) === 2000, JSON.stringify(rows))
+  const bAcc = (await one(U.ownerB, `select count(*)::int n from accounts where business_id=$1`, [A])).n
+  assert(bAcc === 0)
+  await rejects(q(U.ownerA, `insert into journal_entries (business_id,reference,description,debit_account_id,credit_account_id,amount,created_by) values ($1,'X','x',$2,$2,1,$3)`, [A, cash, U.ownerA]))
+  assert((await q(U.cashierA, `select * from accounts where business_id=$1`, [A])).rows.length === 0, 'cashier saw accounts')
+})
+await t('extended report: VAT bands, input VAT, hourly, categories, cashiers', async () => {
+  const r = (await one(U.accountantA, `select business_report($1, now() - interval '1 day', now() + interval '1 day') r`, [A])).r
+  assert(r.vat_bands.length >= 1 && r.hourly.length >= 1 && r.categories.length >= 1 && r.cashiers.length >= 1, JSON.stringify(Object.keys(r)))
+  assert(Number(r.input_vat) > 0 && Number(r.discounts) >= 10 && Number(r.creditor_balance) === 6000 && r.expiring_count >= 1, JSON.stringify({ iv: r.input_vat, d: r.discounts, cb: r.creditor_balance, e: r.expiring_count }))
+  const split = r.payment_methods.find(m => m.method === 'card')
+  assert(split && Number(split.total) >= 50, JSON.stringify(r.payment_methods))
+})
+await t('settings validation: logo must be an image, theme must be a colour', async () => {
+  await rejects(q(U.ownerA, `update businesses set logo_data='javascript:alert(1)' where id=$1`, [A]), /check constraint/)
+  await rejects(q(U.ownerA, `update businesses set theme_color='red' where id=$1`, [A]), /check constraint/)
+  const r = await q(U.ownerA, `update businesses set theme_color='#0f766e', mpesa_till='123456', business_type='bar' where id=$1`, [A])
+  assert(r.affectedRows === 1)
 })
 
 await t('browser cannot read raw callbacks, phones or Daraja IDs', async () => {

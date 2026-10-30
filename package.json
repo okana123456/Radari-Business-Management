@@ -13,7 +13,8 @@
     "@supabase/supabase-js": "^2.76.1",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "react-router-dom": "^7.9.4"
+    "react-router-dom": "^7.9.4",
+    "read-excel-file": "^9.3.14"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.13",

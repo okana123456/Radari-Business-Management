@@ -6,16 +6,24 @@ import type { Role } from './roles'
 export type Business = {
   id: string; name: string; phone: string | null; email: string | null; address: string | null
   kra_pin: string | null; receipt_footer: string | null; timezone: string
+  business_type: string; mpesa_paybill: string | null; mpesa_account: string | null; mpesa_till: string | null
+  mpesa_pochi: string | null; mpesa_send_money: string | null; logo_data: string | null; theme_color: string | null
+  default_vat_rate: number; min_price_percent: number; day_start_hour: number
+  loyalty_enabled: boolean; loyalty_spend_per_point: number; loyalty_point_value: number; glovo_store_id: string | null
 }
+export const BUSINESS_COLUMNS = 'id,name,phone,email,address,kra_pin,receipt_footer,timezone,business_type,mpesa_paybill,mpesa_account,mpesa_till,mpesa_pochi,mpesa_send_money,logo_data,theme_color,default_vat_rate,min_price_percent,day_start_hour,loyalty_enabled,loyalty_spend_per_point,loyalty_point_value,glovo_store_id'
 export type Subscription = { status: string; current_period_start: string | null; current_period_end: string | null; grace_ends_at: string | null }
 export type Membership = { businessId: string; businessName: string; role: Role }
 export type Product = {
   id: string; name: string; category: string; sku: string | null; barcode: string | null
   cost: number; price: number; stock: number; reorder_level: number; vat_rate: number
   active: boolean; is_low_stock: boolean; updated_at: string
+  unit: string; tax_category: string; min_price_percent: number | null; batch_number: string | null; expiry_date: string | null
+  container_ml: number | null; serving_ml: number | null; serving_price: number | null
 }
 
-export const PRODUCT_COLUMNS = 'id,name,category,sku,barcode,cost,price,stock,reorder_level,vat_rate,active,is_low_stock,updated_at'
+export const PRODUCT_COLUMNS = 'id,name,category,sku,barcode,cost,price,stock,reorder_level,vat_rate,active,is_low_stock,updated_at,unit,tax_category,min_price_percent,batch_number,expiry_date,container_ml,serving_ml,serving_price'
+const numOrNull = (value: unknown) => value === null || value === undefined || value === '' ? null : Number(value)
 
 export const toProduct = (row: Record<string, unknown>): Product => ({
   id: String(row.id), name: String(row.name), category: String(row.category || 'General'),
@@ -24,7 +32,13 @@ export const toProduct = (row: Record<string, unknown>): Product => ({
   vat_rate: Number(row.vat_rate), active: row.active !== false,
   is_low_stock: row.is_low_stock === undefined ? Number(row.stock) <= Number(row.reorder_level) : Boolean(row.is_low_stock),
   updated_at: String(row.updated_at || ''),
+  unit: String(row.unit || 'Piece'), tax_category: String(row.tax_category || 'standard'),
+  min_price_percent: numOrNull(row.min_price_percent), batch_number: (row.batch_number as string) || null,
+  expiry_date: (row.expiry_date as string) || null, container_ml: numOrNull(row.container_ml),
+  serving_ml: numOrNull(row.serving_ml), serving_price: numOrNull(row.serving_price),
 })
+
+export const canServe = (p: Product) => !!(p.container_ml && p.serving_ml && p.serving_price !== null)
 
 const BUSINESS_PREFERENCE = 'radari.selectedBusiness'
 

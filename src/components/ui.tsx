@@ -37,18 +37,19 @@ export function Stat({ label, value, hint, tone }: { label: string; value: React
   </div>
 }
 
-export function StatusBadge({ status }: { status: string }) {
-  const tone = ({ completed: 'good', active: 'good', accepted: 'good', confirmed: 'good', voided: 'critical', disabled: 'critical', failed: 'critical', suspended: 'critical', grace: 'warning', pending: 'warning', submitted: 'warning', expired: 'muted', revoked: 'muted', cancelled: 'muted' } as Record<string, string>)[status] || 'muted'
-  const icon = tone === 'good' ? '✓' : tone === 'critical' ? '✕' : tone === 'warning' ? '!' : '•'
-  return <span className={`badge status ${tone}`}><span aria-hidden="true">{icon}</span> {status.replace(/_/g, ' ')}</span>
+const STATUS_TONE: Record<string, string> = { completed: 'good', active: 'good', accepted: 'good', confirmed: 'good', paid: 'good', voided: 'critical', disabled: 'critical', failed: 'critical', suspended: 'critical', overdue: 'critical', expired: 'critical', grace: 'warning', pending: 'warning', submitted: 'warning', revoked: 'muted', cancelled: 'muted' }
+export function StatusBadge({ status, label }: { status: string; label?: string }) {
+  return <span className={`badge status ${STATUS_TONE[status] || 'muted'}`}>{label || status.replace(/_/g, ' ')}</span>
 }
 
 const PRESETS: [string, string][] = [['today', 'Today'], ['yesterday', 'Yesterday'], ['7days', '7 days'], ['month', 'This month'], ['lastmonth', 'Last month'], ['30days', '30 days']]
+const LONG_PRESETS: [string, string][] = [['month', 'This month'], ['lastmonth', 'Last month'], ['quarter', 'This quarter'], ['year', 'This year']]
 
-export function DateRangePicker({ value, onChange }: { value: DateRange; onChange: (range: DateRange) => void }) {
-  const active = PRESETS.find(([key]) => { const r = presetRange(key); return r.from === value.from && r.to === value.to })?.[0]
+export function DateRangePicker({ value, onChange, long }: { value: DateRange; onChange: (range: DateRange) => void; long?: boolean }) {
+  const presets = long ? LONG_PRESETS : PRESETS
+  const active = presets.find(([key]) => { const r = presetRange(key); return r.from === value.from && r.to === value.to })?.[0]
   return <div className="range-picker">
-    <div className="chips">{PRESETS.map(([key, label]) =>
+    <div className="chips">{presets.map(([key, label]) =>
       <button type="button" key={key} className={active === key ? 'active' : ''} onClick={() => onChange(presetRange(key))}>{label}</button>)}
     </div>
     <div className="range-inputs">
@@ -62,9 +63,9 @@ export function DateRangePicker({ value, onChange }: { value: DateRange; onChang
 export function Pager({ page, hasMore, onPage, loading }: { page: number; hasMore: boolean; onPage: (page: number) => void; loading?: boolean }) {
   if (page === 0 && !hasMore) return null
   return <div className="pager">
-    <button type="button" disabled={page === 0 || loading} onClick={() => onPage(page - 1)}>← Previous</button>
+    <button type="button" disabled={page === 0 || loading} onClick={() => onPage(page - 1)}>Previous</button>
     <span>Page {page + 1}</span>
-    <button type="button" disabled={!hasMore || loading} onClick={() => onPage(page + 1)}>Next →</button>
+    <button type="button" disabled={!hasMore || loading} onClick={() => onPage(page + 1)}>Next</button>
   </div>
 }
 

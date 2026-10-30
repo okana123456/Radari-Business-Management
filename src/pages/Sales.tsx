@@ -10,13 +10,15 @@ type Sale = {
   id: string; receipt_number: string; cashier_id: string; total: number; vat_amount: number; total_cost: number
   payment_method: string; payment_reference: string | null; customer_name: string | null; status: string
   sold_at: string; void_reason: string | null; voided_at: string | null; voided_by: string | null
+  discount_total: number; loyalty_discount: number; loyalty_points_redeemed: number; credit_due_date: string | null
 }
-type SaleItem = { id: string; product_name: string; quantity: number; unit_price: number; line_total: number; vat_rate: number }
-const COLUMNS = 'id,receipt_number,cashier_id,total,vat_amount,total_cost,payment_method,payment_reference,customer_name,status,sold_at,void_reason,voided_at,voided_by'
+type SaleItem = { id: string; product_name: string; quantity: number; unit_price: number; line_total: number; vat_rate: number; list_price: number | null }
+type SalePayment = { method: string; amount: number; reference: string | null }
+const COLUMNS = 'id,receipt_number,cashier_id,total,vat_amount,total_cost,payment_method,payment_reference,customer_name,status,sold_at,void_reason,voided_at,voided_by,discount_total,loyalty_discount,loyalty_points_redeemed,credit_due_date'
 const PAGE = 25
 
 export default function Sales() {
-  const { businessId, role, staffName } = useAccount()
+  const { businessId, role, staffName, user } = useAccount()
   const [range, setRange] = useState<DateRange>(presetRange('today'))
   const [method, setMethod] = useState('all')
   const [status, setStatus] = useState('all')
@@ -58,7 +60,7 @@ export default function Sales() {
     <DateRangePicker value={range} onChange={setRange} />
     <div className="toolbar">
       <input type="search" value={search} onChange={e => setSearch(e.target.value)} placeholder="Receipt no., customer or M-Pesa code" aria-label="Search sales" />
-      <select value={method} onChange={e => setMethod(e.target.value)} aria-label="Payment method"><option value="all">All payments</option><option value="cash">Cash</option><option value="mpesa">M-Pesa</option><option value="credit">Credit</option></select>
+      <select value={method} onChange={e => setMethod(e.target.value)} aria-label="Payment method"><option value="all">All payments</option><option value="cash">Cash</option><option value="mpesa">M-Pesa</option><option value="card">Card</option><option value="credit">Credit</option><option value="split">Split</option></select>
       <select value={status} onChange={e => setStatus(e.target.value)} aria-label="Status"><option value="all">All statuses</option><option value="completed">Completed</option><option value="voided">Voided</option></select>
     </div>
     <ErrorNotice message={error} onRetry={load} />
@@ -78,27 +80,31 @@ export default function Sales() {
       </table></div>
       <Pager page={page} hasMore={rows.length > PAGE} onPage={setPage} />
     </>}
-    {open && <SaleDetail sale={open} canVoid={can(role, 'voidSale')} onClose={() => setOpen(null)} onVoided={() => { setOpen(null); load() }} />}
+    {open && <SaleDetail sale={open} canVoid={can(role, 'voidSale') || (role === 'cashier' && open.cashier_id === user.id && Date.now() - new Date(open.sold_at).getTime() < 15 * 60 * 1000)} onClose={() => setOpen(null)} onVoided={() => { setOpen(null); load() }} />}
   </>
 }
 
 function SaleDetail({ sale, canVoid, onClose, onVoided }: { sale: Sale; canVoid: boolean; onClose: () => void; onVoided: () => void }) {
   const { businessId, business, staffName, reloadProducts } = useAccount()
   const [items, setItems] = useState<SaleItem[] | null>(null)
+  const [payments, setPayments] = useState<SalePayment[]>([])
   const [error, setError] = useState('')
   const [printing, setPrinting] = useState(false)
   const [voiding, setVoiding] = useState(false)
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
-    supabase.from('sale_items').select('id,product_name,quantity,unit_price,line_total,vat_rate')
+    supabase.from('sale_items').select('id,product_name,quantity,unit_price,line_total,vat_rate,list_price')
       .eq('business_id', businessId).eq('sale_id', sale.id)
       .then(({ data, error: loadError }) => { if (loadError) setError(friendlyError(loadError)); else setItems(data as SaleItem[]) })
+    supabase.from('sale_payments').select('method,amount,reference').eq('business_id', businessId).eq('sale_id', sale.id)
+      .then(({ data }) => setPayments((data || []).map(p => ({ ...p, amount: Number(p.amount) })) as SalePayment[]))
   }, [businessId, sale.id])
 
   const receipt: ReceiptData | null = items && {
     number: sale.receipt_number, soldAt: sale.sold_at, payment: sale.payment_method, total: Number(sale.total), vat: Number(sale.vat_amount),
-    items: items.map(i => ({ name: i.product_name, quantity: Number(i.quantity), unitPrice: Number(i.unit_price), lineTotal: Number(i.line_total) })),
+    items: items.map(i => ({ name: i.product_name, quantity: Number(i.quantity), unitPrice: Number(i.unit_price), lineTotal: Number(i.line_total), listPrice: i.list_price === null ? null : Number(i.list_price) })),
+    payments, discount: Number(sale.discount_total || 0), loyaltyDiscount: Number(sale.loyalty_discount || 0), pointsRedeemed: sale.loyalty_points_redeemed, creditDueDate: sale.credit_due_date,
     cashier: staffName(sale.cashier_id), customer: sale.customer_name, paymentReference: sale.payment_reference, status: sale.status, voidReason: sale.void_reason,
   }
 
@@ -118,7 +124,10 @@ function SaleDetail({ sale, canVoid, onClose, onVoided }: { sale: Sale; canVoid:
     <div className="detail-grid">
       <div><span>Date</span><strong>{dateTime(sale.sold_at)}</strong></div>
       <div><span>Status</span><StatusBadge status={sale.status} /></div>
-      <div><span>Payment</span><strong>{paymentLabel(sale.payment_method)}{sale.payment_reference ? ` · ${sale.payment_reference}` : ''}</strong></div>
+      <div><span>Payment</span><strong>{payments.length > 1 ? payments.map(p => `${paymentLabel(p.method)} ${money(p.amount)}`).join(', ') : `${paymentLabel(sale.payment_method)}${sale.payment_reference ? ` · ${sale.payment_reference}` : ''}`}</strong></div>
+      {Number(sale.discount_total) > 0 && <div><span>Discounts</span><strong>{money(sale.discount_total)}</strong></div>}
+      {Number(sale.loyalty_discount) > 0 && <div><span>Points redeemed</span><strong>{sale.loyalty_points_redeemed} ({money(sale.loyalty_discount)})</strong></div>}
+      {sale.credit_due_date && <div><span>Credit due</span><strong>{sale.credit_due_date}</strong></div>}
       <div><span>Cashier</span><strong>{staffName(sale.cashier_id)}</strong></div>
       {sale.customer_name && <div><span>Customer</span><strong>{sale.customer_name}</strong></div>}
       <div><span>Total</span><strong>{money(sale.total)}</strong></div>
@@ -132,12 +141,12 @@ function SaleDetail({ sale, canVoid, onClose, onVoided }: { sale: Sale; canVoid:
     </table>}
     <div className="modal-actions">
       <button type="button" className="button" disabled={!receipt} onClick={() => setPrinting(true)}>Reprint receipt</button>
-      {canVoid && sale.status === 'completed' && !voiding && <button type="button" className="button danger" onClick={() => setVoiding(true)}>Void sale…</button>}
+      {canVoid && sale.status === 'completed' && !voiding && <button type="button" className="button danger" onClick={() => setVoiding(true)}>Void sale</button>}
     </div>
     {voiding && <form className="danger-zone" onSubmit={voidSale}>
-      <p><strong>Void this sale?</strong> Stock goes back on the shelf{sale.payment_method === 'credit' ? ' and the customer’s balance is reduced' : ''}. If cash or M-Pesa was received, refund the customer separately. This cannot be undone.</p>
+      <p><strong>Void this sale?</strong> Stock goes back on the shelf, credit owed is cancelled and loyalty points are reversed. If cash or M-Pesa was received, refund the customer separately. This cannot be undone.</p>
       <label>Reason<input name="reason" required minLength={3} maxLength={300} placeholder="e.g. Customer returned goods" autoFocus /></label>
-      <div className="modal-actions"><button type="button" className="button secondary" onClick={() => setVoiding(false)}>Cancel</button><button className="button danger" disabled={busy}>{busy ? 'Voiding…' : 'Confirm void'}</button></div>
+      <div className="modal-actions"><button type="button" className="button secondary" onClick={() => setVoiding(false)}>Cancel</button><button className="button danger" disabled={busy}>{busy ? 'Voiding' : 'Confirm void'}</button></div>
     </form>}
   </Modal>
 }
