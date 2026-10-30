@@ -34,6 +34,9 @@ const darajaBaseUrl = darajaEnvironment === 'production'
   ? 'https://api.safaricom.co.ke'
   : 'https://sandbox.safaricom.co.ke'
 
+// Errors safe to show to the customer. Anything else is logged and replaced with a generic message.
+class UserError extends Error {}
+
 function requiredSecret(name: string): string {
   const value = Deno.env.get(name)
   if (!value) throw new Error(`${name} is not configured`)
@@ -45,7 +48,7 @@ function normalizeKenyanPhone(value: string): string {
   if (/^254[17]\d{8}$/.test(digits)) return digits
   if (/^0[17]\d{8}$/.test(digits)) return `254${digits.slice(1)}`
   if (/^[17]\d{8}$/.test(digits)) return `254${digits}`
-  throw new Error('Enter a valid Kenyan M-Pesa number')
+  throw new UserError('Enter a valid Kenyan M-Pesa number')
 }
 
 function darajaTimestamp(): string {
@@ -57,7 +60,7 @@ async function darajaAccessToken(): Promise<string> {
   const response = await fetch(`${darajaBaseUrl}/oauth/v1/generate?grant_type=client_credentials`, {
     headers: { Authorization: `Basic ${credentials}` },
   })
-  const result = await response.json()
+  const result = await response.json().catch(() => ({}))
   if (!response.ok || !result.access_token) throw new Error('Daraja authentication failed')
   return result.access_token
 }
@@ -84,9 +87,9 @@ async function requestStkPush(phone: string, amount: number, accountReference: s
       TransactionDesc: 'Radari POS subscription',
     }),
   })
-  const result = await response.json()
+  const result = await response.json().catch(() => ({}))
   if (!response.ok || result.ResponseCode !== '0') {
-    throw new Error(result.errorMessage || result.ResponseDescription || 'STK Push failed')
+    throw new UserError('M-Pesa could not send the payment request. Check the number and try again.')
   }
   return result
 }
@@ -104,7 +107,7 @@ Deno.serve(async (request) => {
     const { data: authData, error: authError } = await supabase.auth.getUser()
     if (authError || !authData.user) return json({ error: 'Invalid session' }, 401)
 
-    const { businessId, phone } = await request.json()
+    const { businessId, phone } = await request.json().catch(() => ({}))
     if (!businessId || !phone) return json({ error: 'Business and phone are required' }, 400)
 
     const { data: membership } = await supabase
@@ -122,13 +125,25 @@ Deno.serve(async (request) => {
       .select('plan_id,plans(price_kes)')
       .eq('business_id', businessId)
       .single()
-    if (subscriptionError || !subscription) throw new Error('Subscription was not found')
+    if (subscriptionError || !subscription) throw new UserError('Subscription was not found')
 
     const plan = Array.isArray(subscription.plans) ? subscription.plans[0] : subscription.plans
     const amount = Number(plan?.price_kes)
     if (!amount) throw new Error('Subscription price is invalid')
 
-    const normalizedPhone = normalizeKenyanPhone(phone)
+    const normalizedPhone = normalizeKenyanPhone(String(phone))
+
+    // One pending STK Push at a time per business stops accidental double charges and spam.
+    const { data: recent } = await admin
+      .from('payment_requests')
+      .select('id')
+      .eq('business_id', businessId)
+      .in('status', ['created', 'submitted'])
+      .gte('created_at', new Date(Date.now() - 90_000).toISOString())
+      .limit(1)
+    if (recent && recent.length) {
+      throw new UserError('A payment request was sent less than 2 minutes ago. Check your phone or try again shortly.')
+    }
     const { data: paymentRequest, error: requestError } = await admin
       .from('payment_requests')
       .insert({
@@ -140,7 +155,7 @@ Deno.serve(async (request) => {
       })
       .select('id')
       .single()
-    if (requestError) throw requestError
+    if (requestError) throw new Error('Could not create payment request')
 
     try {
       const stk = await requestStkPush(normalizedPhone, amount, `RADARI-${paymentRequest.id.slice(0, 6)}`)
@@ -153,20 +168,24 @@ Deno.serve(async (request) => {
           updated_at: new Date().toISOString(),
         })
         .eq('id', paymentRequest.id)
-      if (updateError) throw updateError
+      if (updateError) throw new Error('Could not save STK Push reference')
+      // The checkout ID is deliberately not returned to the browser.
       return json({
         paymentRequestId: paymentRequest.id,
-        checkoutRequestId: stk.CheckoutRequestID,
         message: 'Check your phone and enter your M-Pesa PIN.',
       })
     } catch (error) {
       await admin.from('payment_requests').update({
-        status: 'failed', failure_reason: error.message, updated_at: new Date().toISOString(),
+        status: 'failed',
+        failure_reason: error instanceof UserError ? error.message : 'Payment request could not be sent',
+        updated_at: new Date().toISOString(),
       }).eq('id', paymentRequest.id)
       throw error
     }
   } catch (error) {
-    return json({ error: error.message || 'Payment request failed' }, 400)
+    if (error instanceof UserError) return json({ error: error.message }, 400)
+    console.error('initiate-subscription-payment:', error instanceof Error ? error.message : 'unexpected error')
+    return json({ error: 'The payment request could not be started. Please try again.' }, 500)
   }
 })
 

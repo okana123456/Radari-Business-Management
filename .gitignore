@@ -9,3 +9,4 @@ supabase/.temp/
 vite.config.js
 vite.config.d.ts
 
+*.patch

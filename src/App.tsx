@@ -1,42 +1,37 @@
-import { FormEvent, useEffect, useState } from 'react'
-import { Link, Navigate, Route, Routes, useNavigate } from 'react-router-dom'
-import { FunctionsHttpError, type Session, type User } from '@supabase/supabase-js'
+import { FormEvent, lazy, ReactElement, useCallback, useEffect, useState } from 'react'
+import { Link, Navigate, Route, Routes, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
+import type { Session, User } from '@supabase/supabase-js'
 import { supabase } from './lib/supabase'
-import { POS } from './POS'
+import { AccountProvider, Business, loadMemberships, Membership, pickMembership, rememberBusiness, Subscription, subscriptionActive, useAccount } from './lib/account'
+import { can, homePath, Permission } from './lib/roles'
+import { friendlyError, money } from './lib/format'
+import { Shell } from './components/Shell'
+import { PayForm } from './components/PayForm'
 
-type BusinessAccount = { businessId: string; businessName: string; phone: string; subscriptionStatus: string }
+const Dashboard = lazy(() => import('./pages/Dashboard'))
+const POS = lazy(() => import('./pages/POS'))
+const Inventory = lazy(() => import('./pages/Inventory'))
+const Sales = lazy(() => import('./pages/Sales'))
+const Expenses = lazy(() => import('./pages/Expenses'))
+const Customers = lazy(() => import('./pages/Customers'))
+const Suppliers = lazy(() => import('./pages/Suppliers'))
+const Reports = lazy(() => import('./pages/Reports'))
+const Staff = lazy(() => import('./pages/Staff'))
+const SubscriptionPage = lazy(() => import('./pages/Subscription'))
+const Settings = lazy(() => import('./pages/Settings'))
+
 const slugify = (value: string) => value.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
 
-async function loadBusinessAccount(user: User): Promise<BusinessAccount | null> {
-  const { data: membership, error: membershipError } = await supabase
-    .from('business_memberships')
-    .select('business_id, businesses(name)')
-    .eq('user_id', user.id).eq('status', 'active').limit(1).maybeSingle()
-  if (membershipError) throw membershipError
-  if (!membership) return null
+class NoBusinessError extends Error {}
 
-  const { data: subscription, error: subscriptionError } = await supabase
-    .from('subscriptions')
-    .select('status')
-    .eq('business_id', membership.business_id)
-    .maybeSingle()
-  if (subscriptionError) throw subscriptionError
-
-  const business = Array.isArray(membership.businesses) ? membership.businesses[0] : membership.businesses
-  return {
-    businessId: membership.business_id,
-    businessName: business?.name || 'My Business',
-    phone: String(user.user_metadata?.phone || ''),
-    subscriptionStatus: subscription?.status || 'pending',
-  }
-}
-
-async function provisionBusiness(user: User): Promise<BusinessAccount> {
-  const existing = await loadBusinessAccount(user)
-  if (existing) return existing
+/** Joins any businesses that invited this user, then creates their own business if they signed up as an owner. */
+async function provisionAccount(user: User): Promise<Membership[]> {
+  await supabase.rpc('accept_pending_invitations').then(() => undefined, () => undefined)
+  const existing = await loadMemberships()
+  if (existing.length) return existing
   const metadata = user.user_metadata || {}
   const businessName = String(metadata.business_name || '').trim()
-  if (!businessName) throw new Error('Business details are missing. Please create the account again.')
+  if (!businessName) throw new NoBusinessError('No business is linked to this account yet. If your employer invited you, ask them to check that they used this exact email address, then sign in again.')
   const baseSlug = String(metadata.business_slug || slugify(businessName)) || 'business'
   const { error } = await supabase.rpc('create_business_account', {
     business_name: businessName,
@@ -45,101 +40,213 @@ async function provisionBusiness(user: User): Promise<BusinessAccount> {
     owner_phone: String(metadata.phone || ''),
   })
   if (error) throw error
-  const created = await loadBusinessAccount(user)
-  if (!created) throw new Error('The business account could not be loaded.')
-  return created
+  return loadMemberships()
 }
 
 function Landing() {
   return <main className="landing">
-    <nav><strong>Radari POS</strong><div className="nav-links"><Link to="/login">Sign in</Link><Link className="nav-cta" to="/signup">Create account</Link></div></nav>
-    <section className="hero"><span className="eyebrow">Built for Kenyan businesses</span><h1>See every sale. Know every stock level.</h1><p>Run sales, stock, expenses and business reports from any device for KSh 1,500 every 30 days.</p><Link className="primary" to="/signup">Start using Radari</Link></section>
+    <nav className="landing-nav"><strong>Radari POS</strong><div className="nav-links"><Link to="/login">Sign in</Link><Link className="nav-cta" to="/signup">Create account</Link></div></nav>
+    <section className="hero"><span className="eyebrow">Built for Kenyan businesses</span><h1>See every sale. Know every stock level.</h1>
+      <p>Sell, track stock, record expenses and credit, manage staff and see your profit — from any phone or computer, for KSh 1,500 every 30 days.</p>
+      <Link className="primary" to="/signup">Start using Radari</Link></section>
+    <section className="feature-grid">
+      {[['🛒', 'Fast till', 'Barcode search, M-Pesa, cash and credit sales, printable receipts.'],
+        ['📦', 'Stock control', 'Low-stock alerts, deliveries, adjustments and a full audit trail.'],
+        ['📊', 'Real profit', 'Daily profit after cost of goods, VAT and expenses.'],
+        ['🪪', 'Staff roles', 'Cashiers sell; only owners and admins can void or see reports.']].map(([icon, title, text]) =>
+        <div key={title}><span aria-hidden="true">{icon}</span><strong>{title}</strong><p>{text}</p></div>)}
+    </section>
   </main>
 }
 
 function Signup() {
   const navigate = useNavigate()
+  const [params] = useSearchParams()
+  const [staffMode, setStaffMode] = useState(params.get('staff') === '1')
   const [busy, setBusy] = useState(false), [message, setMessage] = useState(''), [error, setError] = useState('')
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setBusy(true); setError(''); setMessage('')
     const form = new FormData(event.currentTarget)
     const fullName = String(form.get('fullName') || '').trim(), phone = String(form.get('phone') || '').trim()
-    const businessName = String(form.get('businessName') || '').trim(), email = String(form.get('email') || '').trim().toLowerCase()
+    const businessName = staffMode ? '' : String(form.get('businessName') || '').trim(), email = String(form.get('email') || '').trim().toLowerCase()
     try {
       const { data, error: signupError } = await supabase.auth.signUp({
         email, password: String(form.get('password') || ''),
-        options: { emailRedirectTo: `${window.location.origin}/login`, data: { full_name: fullName, phone, business_name: businessName, business_slug: slugify(businessName) } },
+        options: { emailRedirectTo: `${window.location.origin}/login`, data: staffMode ? { full_name: fullName, phone } : { full_name: fullName, phone, business_name: businessName, business_slug: slugify(businessName) } },
       })
       if (signupError) throw signupError
-      if (data.session && data.user) { await provisionBusiness(data.user); navigate('/app') }
+      if (data.session && data.user) navigate('/app')
       else setMessage('Check your email and confirm your account. Then return here and sign in.')
-    } catch (caught) { setError(caught instanceof Error ? caught.message : 'Account creation failed') }
+    } catch (caught) { setError(friendlyError(caught, 'Account creation failed')) }
     finally { setBusy(false) }
   }
   return <main className="centered"><section className="card form-card">
-    <span className="eyebrow">Create your business account</span><h1>Start with Radari POS</h1><p className="intro">Create your account, then activate it securely with M-Pesa.</p>
-    <form onSubmit={submit}><label>Full name<input name="fullName" autoComplete="name" required /></label><label>Phone number<input name="phone" type="tel" placeholder="0712 345 678" autoComplete="tel" required /></label><label>Business name<input name="businessName" autoComplete="organization" required /></label><label>Email address<input name="email" type="email" autoComplete="email" required /></label><label>Password<input name="password" type="password" minLength={8} autoComplete="new-password" required /></label>{error && <div className="notice error">{error}</div>}{message && <div className="notice success">{message}</div>}<button className="primary submit" disabled={busy}>{busy ? 'Creating account…' : 'Create account'}</button></form>
+    <span className="eyebrow">{staffMode ? 'Join your workplace' : 'Create your business account'}</span>
+    <h1>{staffMode ? 'Create your staff login' : 'Start with Radari POS'}</h1>
+    <p className="intro">{staffMode ? 'Use the same email address your employer invited. You will join their business when you sign in.' : 'Create your account, then activate it securely with M-Pesa.'}</p>
+    <div className="segmented" role="radiogroup" aria-label="Account type">
+      <button type="button" role="radio" aria-checked={!staffMode} className={!staffMode ? 'active' : ''} onClick={() => setStaffMode(false)}>I own a business</button>
+      <button type="button" role="radio" aria-checked={staffMode} className={staffMode ? 'active' : ''} onClick={() => setStaffMode(true)}>I was invited as staff</button>
+    </div>
+    <form onSubmit={submit}>
+      <label>Full name<input name="fullName" autoComplete="name" required maxLength={120} /></label>
+      <label>Phone number<input name="phone" type="tel" placeholder="0712 345 678" autoComplete="tel" required maxLength={30} /></label>
+      {!staffMode && <label>Business name<input name="businessName" autoComplete="organization" required minLength={2} maxLength={120} /></label>}
+      <label>Email address<input name="email" type="email" autoComplete="email" required /></label>
+      <label>Password<input name="password" type="password" minLength={8} autoComplete="new-password" required /></label>
+      {error && <div className="notice error" role="alert">{error}</div>}{message && <div className="notice success" role="status">{message}</div>}
+      <button className="primary submit" disabled={busy}>{busy ? 'Creating account…' : 'Create account'}</button>
+    </form>
     <p className="form-footer">Already registered? <Link to="/login">Sign in</Link></p>
   </section></main>
 }
 
 function Login() {
-  const navigate = useNavigate(); const [busy, setBusy] = useState(false), [error, setError] = useState('')
+  const navigate = useNavigate(); const [busy, setBusy] = useState(false), [error, setError] = useState(''), [notice, setNotice] = useState('')
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setBusy(true); setError(''); const form = new FormData(event.currentTarget)
     try {
-      const { data, error: loginError } = await supabase.auth.signInWithPassword({ email: String(form.get('email') || '').trim().toLowerCase(), password: String(form.get('password') || '') })
+      const { error: loginError } = await supabase.auth.signInWithPassword({ email: String(form.get('email') || '').trim().toLowerCase(), password: String(form.get('password') || '') })
       if (loginError) throw loginError
-      await provisionBusiness(data.user); navigate('/app')
-    } catch (caught) { setError(caught instanceof Error ? caught.message : 'Sign in failed') }
+      navigate('/app')
+    } catch (caught) { setError(friendlyError(caught, 'Sign in failed')) }
     finally { setBusy(false) }
   }
-  return <main className="centered"><section className="card form-card compact"><span className="eyebrow">Welcome back</span><h1>Sign in to Radari</h1><form onSubmit={submit}><label>Email address<input name="email" type="email" autoComplete="email" required /></label><label>Password<input name="password" type="password" autoComplete="current-password" required /></label>{error && <div className="notice error">{error}</div>}<button className="primary submit" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button></form><p className="form-footer">New to Radari? <Link to="/signup">Create account</Link></p></section></main>
+  async function reset(event: React.MouseEvent<HTMLButtonElement>) {
+    const email = (event.currentTarget.form?.elements.namedItem('email') as HTMLInputElement | null)?.value.trim().toLowerCase()
+    if (!email) { setError('Enter your email address first, then tap “Forgot password”.'); return }
+    setError('')
+    await supabase.auth.resetPasswordForEmail(email, { redirectTo: `${window.location.origin}/reset-password` })
+    setNotice('If that email has an account, a password reset link is on its way.')
+  }
+  return <main className="centered"><section className="card form-card compact"><span className="eyebrow">Welcome back</span><h1>Sign in to Radari</h1>
+    <form onSubmit={submit}>
+      <label>Email address<input name="email" type="email" autoComplete="email" required /></label>
+      <label>Password<input name="password" type="password" autoComplete="current-password" required /></label>
+      {error && <div className="notice error" role="alert">{error}</div>}{notice && <div className="notice success" role="status">{notice}</div>}
+      <button className="primary submit" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button>
+      <button type="button" className="text-button" onClick={reset}>Forgot password?</button>
+    </form>
+    <p className="form-footer">New to Radari? <Link to="/signup">Create account</Link></p></section></main>
 }
 
-function Activation({ account, onActivated }: { account: BusinessAccount; onActivated: () => void }) {
-  const [phone, setPhone] = useState(account.phone), [busy, setBusy] = useState(false), [message, setMessage] = useState(''), [error, setError] = useState('')
-  useEffect(() => {
-    if (!message) return
-    const timer = window.setInterval(async () => { const { data } = await supabase.from('subscriptions').select('status').eq('business_id', account.businessId).single(); if (data && ['active', 'grace'].includes(data.status)) { window.clearInterval(timer); onActivated() } }, 5000)
-    return () => window.clearInterval(timer)
-  }, [account.businessId, message, onActivated])
-  async function pay(event: FormEvent) {
-    event.preventDefault(); setBusy(true); setError(''); setMessage('')
-    try {
-      const { data, error: invokeError } = await supabase.functions.invoke('initiate-subscription-payment', { body: { businessId: account.businessId, phone } })
-      if (invokeError) {
-        if (invokeError instanceof FunctionsHttpError) {
-          const details = await invokeError.context.json().catch(() => null)
-          throw new Error(details?.error || details?.message || invokeError.message)
-        }
-        throw invokeError
-      }
-      if (data?.error) throw new Error(data.error)
-      setMessage(data?.message || 'Check your phone and enter your M-Pesa PIN.')
-    } catch (caught) { setError(caught instanceof Error ? caught.message : 'Payment request failed') }
-    finally { setBusy(false) }
+function ResetPassword() {
+  const navigate = useNavigate()
+  const [busy, setBusy] = useState(false), [error, setError] = useState('')
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); setBusy(true); setError('')
+    const password = String(new FormData(event.currentTarget).get('password') || '')
+    const { error: updateError } = await supabase.auth.updateUser({ password })
+    setBusy(false)
+    if (updateError) setError(friendlyError(updateError, 'The password could not be changed. Request a new reset link.')); else navigate('/app')
   }
-  return <main className="centered payment-bg"><section className="card payment-card"><span className="eyebrow">Activate {account.businessName}</span><h1>KSh 1,500</h1><p className="intro">Get full Radari access for 30 days. Your account activates automatically after M-Pesa confirms payment.</p><form onSubmit={pay}><label>M-Pesa phone number<input value={phone} onChange={(event) => setPhone(event.target.value)} type="tel" required /></label>{error && <div className="notice error">{error}</div>}{message && <div className="notice success">{message}</div>}<button className="primary submit" disabled={busy}>{busy ? 'Sending request…' : 'Pay KSh 1,500'}</button></form><button className="text-button" onClick={() => supabase.auth.signOut()}>Sign out</button></section></main>
+  return <main className="centered"><section className="card form-card compact"><span className="eyebrow">Account</span><h1>Choose a new password</h1>
+    <form onSubmit={submit}><label>New password<input name="password" type="password" minLength={8} autoComplete="new-password" required /></label>
+      {error && <div className="notice error" role="alert">{error}</div>}
+      <button className="primary submit" disabled={busy}>{busy ? 'Saving…' : 'Save password'}</button></form></section></main>
 }
+
+function Activation({ membership, onActivated, user }: { membership: Membership; onActivated: () => void; user: User }) {
+  const isOwner = membership.role === 'owner'
+  return <main className="centered payment-bg"><section className="card payment-card">
+    <span className="eyebrow">{isOwner ? `Activate ${membership.businessName}` : membership.businessName}</span>
+    {isOwner ? <>
+      <h1>{money(1500)}</h1><p className="intro">Get full Radari access for 30 days. Your account activates automatically after M-Pesa confirms payment.</p>
+      <PayForm businessId={membership.businessId} defaultPhone={String(user.user_metadata?.phone || '')} label="Pay KSh 1,500" onConfirmed={onActivated} />
+    </> : <><h1>Subscription inactive</h1><p className="intro">This business’s Radari subscription is not active. Ask the owner to renew it, then sign in again.</p>
+      <button type="button" className="primary submit" onClick={onActivated}>Check again</button></>}
+    <button className="text-button" onClick={() => supabase.auth.signOut()}>Sign out</button>
+  </section></main>
+}
+
+function Guard({ permission, children }: { permission: Permission; children: ReactElement }) {
+  const { role } = useAccount()
+  return can(role, permission) ? children : <Navigate to={homePath(role)} replace />
+}
+
+function HomeRoute() {
+  const { role } = useAccount()
+  return can(role, 'dashboard') ? <Dashboard /> : <Navigate to={homePath(role)} replace />
+}
+
+type Loaded = { memberships: Membership[]; membership: Membership; business: Business; subscription: Subscription | null }
 
 function AccountRoute({ session }: { session: Session | null }) {
-  const [account, setAccount] = useState<BusinessAccount | null>(null), [loading, setLoading] = useState(true), [error, setError] = useState('')
-  const refresh = async () => { if (!session?.user) return; try { setAccount(await provisionBusiness(session.user)) } catch (caught) { setError(caught instanceof Error ? caught.message : 'Account could not be loaded') } finally { setLoading(false) } }
-  useEffect(() => { refresh() }, [session?.user.id])
+  const [loaded, setLoaded] = useState<Loaded | null>(null), [loading, setLoading] = useState(true), [error, setError] = useState('')
+  const [selected, setSelected] = useState<string | null>(null)
+  const userId = session?.user.id
+
+  const refresh = useCallback(async () => {
+    if (!session?.user) return
+    setError('')
+    try {
+      const memberships = await provisionAccount(session.user)
+      const membership = (selected && memberships.find(m => m.businessId === selected)) || pickMembership(memberships)
+      if (!membership) throw new NoBusinessError('No business found for this account.')
+      const [businessResult, subscriptionResult] = await Promise.all([
+        supabase.from('businesses').select('id,name,phone,email,address,kra_pin,receipt_footer,timezone').eq('id', membership.businessId).single(),
+        supabase.from('subscriptions').select('status,current_period_start,current_period_end,grace_ends_at').eq('business_id', membership.businessId).maybeSingle(),
+      ])
+      if (businessResult.error) throw businessResult.error
+      setLoaded({ memberships, membership: { ...membership, businessName: businessResult.data.name }, business: businessResult.data as Business, subscription: subscriptionResult.data as Subscription | null })
+    } catch (caught) { setError(caught instanceof NoBusinessError ? caught.message : friendlyError(caught, 'Your account could not be loaded.')) }
+    finally { setLoading(false) }
+  }, [session?.user, selected]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => { refresh() }, [userId, selected]) // eslint-disable-line react-hooks/exhaustive-deps
+
   if (!session) return <Navigate to="/login" replace />
-  if (loading) return <main className="centered"><div className="loader">Loading your business…</div></main>
-  if (error || !account) return <main className="centered"><section className="card"><div className="notice error">{error || 'Business account not found'}</div></section></main>
-  return ['active', 'grace'].includes(account.subscriptionStatus) ? <POS account={account} user={session.user} /> : <Activation account={account} onActivated={refresh} />
+  if (loading) return <main className="centered"><div className="loader" role="status"><span className="spinner" aria-hidden="true" /> Loading your business…</div></main>
+  if (error || !loaded) return <main className="centered"><section className="card"><div className="notice error" role="alert">{error || 'Business account not found'}</div>
+    <button type="button" className="primary submit" onClick={() => { setLoading(true); refresh() }}>Try again</button>
+    <button className="text-button" onClick={() => supabase.auth.signOut()}>Sign out</button></section></main>
+  if (!subscriptionActive(loaded.subscription)) return <Activation membership={loaded.membership} user={session.user} onActivated={refresh} />
+
+  return <AccountProvider user={session.user} membership={loaded.membership} memberships={loaded.memberships} business={loaded.business}
+    subscription={loaded.subscription} onReload={refresh} onSwitch={id => { rememberBusiness(id); setLoading(true); setSelected(id) }}>
+    <Routes>
+      <Route element={<Shell />}>
+        <Route index element={<HomeRoute />} />
+        <Route path="pos" element={<Guard permission="pos"><POS /></Guard>} />
+        <Route path="inventory" element={<Guard permission="inventory"><Inventory /></Guard>} />
+        <Route path="sales" element={<Guard permission="sales"><Sales /></Guard>} />
+        <Route path="expenses" element={<Guard permission="expenses"><Expenses /></Guard>} />
+        <Route path="customers" element={<Guard permission="customers"><Customers /></Guard>} />
+        <Route path="suppliers" element={<Guard permission="suppliers"><Suppliers /></Guard>} />
+        <Route path="reports" element={<Guard permission="reports"><Reports /></Guard>} />
+        <Route path="staff" element={<Guard permission="staff"><Staff /></Guard>} />
+        <Route path="subscription" element={<SubscriptionPage />} />
+        <Route path="settings" element={<Guard permission="settings"><Settings /></Guard>} />
+        <Route path="*" element={<Navigate to="/app" replace />} />
+      </Route>
+    </Routes>
+  </AccountProvider>
+}
+
+function ScrollToTop() {
+  const { pathname } = useLocation()
+  useEffect(() => { window.scrollTo(0, 0) }, [pathname])
+  return null
 }
 
 export default function App() {
   const [session, setSession] = useState<Session | null>(null), [ready, setReady] = useState(false)
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => { setSession(data.session); setReady(true) })
-    const { data } = supabase.auth.onAuthStateChange((_event, nextSession) => { setSession(nextSession); setReady(true) })
+    const { data } = supabase.auth.onAuthStateChange((event, nextSession) => {
+      // Token refreshes keep the same user; only swap state when the user actually changes.
+      setSession(current => (event === 'TOKEN_REFRESHED' && current?.user.id === nextSession?.user.id) ? current : nextSession)
+      setReady(true)
+    })
     return () => data.subscription.unsubscribe()
   }, [])
-  if (!ready) return <main className="centered"><div className="loader">Opening Radari…</div></main>
-  return <Routes><Route path="/" element={<Landing />} /><Route path="/signup" element={session ? <Navigate to="/app" replace /> : <Signup />} /><Route path="/login" element={session ? <Navigate to="/app" replace /> : <Login />} /><Route path="/app" element={<AccountRoute session={session} />} /><Route path="*" element={<Navigate to="/" replace />} /></Routes>
+  if (!ready) return <main className="centered"><div className="loader" role="status">Opening Radari…</div></main>
+  return <><ScrollToTop /><Routes>
+    <Route path="/" element={session ? <Navigate to="/app" replace /> : <Landing />} />
+    <Route path="/signup" element={session ? <Navigate to="/app" replace /> : <Signup />} />
+    <Route path="/login" element={session ? <Navigate to="/app" replace /> : <Login />} />
+    <Route path="/reset-password" element={<ResetPassword />} />
+    <Route path="/app/*" element={<AccountRoute session={session} />} />
+    <Route path="*" element={<Navigate to="/" replace />} />
+  </Routes></>
 }
