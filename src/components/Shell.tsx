@@ -12,6 +12,7 @@ const GROUPS: { title: string; items: Item[] }[] = [
     { to: '/app', label: 'Overview', permission: 'dashboard', end: true },
     { to: '/app/pos', label: 'Point of sale', permission: 'pos' },
     { to: '/app/sales', label: 'Sales history', permission: 'sales' },
+    { to: '/app/mpesa', label: 'M-Pesa payments', permission: 'tillPayments' },
     { to: '/app/credit', label: 'Credit sales', permission: 'credit' },
   ] },
   { title: 'Stock', items: [

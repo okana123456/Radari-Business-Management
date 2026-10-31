@@ -441,3 +441,15 @@ td > .badge:first-child, .stat .badge, li > .badge, .badge.lead { margin-left: 0
 }
 button.radio-card { width: 100%; background: #fff; font: inherit; text-align: left; color: var(--ink); }
 button.radio-card:hover { border-color: var(--accent); background: var(--accent-soft); }
+
+/* Live till payments */
+.till-alert { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; margin: 8px 16px 0; padding: 10px 12px; border: 1px solid #86efac; border-left: 4px solid var(--good); border-radius: var(--radius); background: var(--good-bg); color: var(--good); font-size: .9rem; }
+.till-alert strong { color: var(--good); }
+.till-list { display: grid; gap: 4px; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--subtle); font-size: .84rem; }
+.till-list-head { display: flex; justify-content: space-between; align-items: center; font-weight: 700; color: var(--ink-2); font-size: .78rem; text-transform: uppercase; letter-spacing: .05em; }
+.till-list-head small { text-transform: none; letter-spacing: 0; font-weight: 600; color: var(--good); }
+.till-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 6px 0; border-top: 1px solid var(--line); }
+.till-row:first-of-type { border-top: 0; }
+.till-row span { display: grid; min-width: 0; }
+.till-row small { color: var(--ink-3); font-size: .74rem; }
+.till-row.selected { background: var(--good-bg); margin: 0 -10px; padding: 6px 10px; }

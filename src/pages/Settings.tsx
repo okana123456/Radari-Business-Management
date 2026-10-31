@@ -1,8 +1,10 @@
-import { ChangeEvent, FormEvent, useState } from 'react'
+import { ChangeEvent, FormEvent, useEffect, useState } from 'react'
+import { FunctionsHttpError } from '@supabase/supabase-js'
 import { supabase } from '../lib/supabase'
 import { Business, useAccount } from '../lib/account'
-import { roleLabel } from '../lib/roles'
-import { BUSINESS_TYPES, friendlyError, money } from '../lib/format'
+import { can, roleLabel } from '../lib/roles'
+import { loadTillConnection, TillConnection } from '../lib/tillPayments'
+import { BUSINESS_TYPES, dateTime, friendlyError, money } from '../lib/format'
 import { ErrorNotice, PageHeader } from '../components/ui'
 import { ReceiptView } from '../components/Receipt'
 
@@ -29,7 +31,7 @@ function resizeLogo(file: File): Promise<string> {
 }
 
 export default function Settings() {
-  const { business, businessId, memberships, switchBusiness, reloadAccount } = useAccount()
+  const { business, businessId, memberships, switchBusiness, reloadAccount, role } = useAccount()
   const [draft, setDraft] = useState<Business>(business)
   const [busy, setBusy] = useState(false), [error, setError] = useState(''), [saved, setSaved] = useState(false)
   const [preview, setPreview] = useState(false)
@@ -122,6 +124,8 @@ export default function Settings() {
       <div className="modal-actions"><button className="button" disabled={busy}>{busy ? 'Saving' : 'Save settings'}</button></div>
     </form>
 
+    {can(role, 'connectTill') && <TillConnectPanel />}
+
     {memberships.length > 1 && <section className="panel" style={{ marginTop: 16 }}><h2>Your businesses</h2>
       <ul className="simple-list">{memberships.map(m => <li key={m.businessId}><span><strong>{m.businessName}</strong><small>{roleLabel[m.role]}</small></span>
         {m.businessId === businessId ? <span className="badge good">Current</span> : <button type="button" className="button secondary small" onClick={() => switchBusiness(m.businessId)}>Switch</button>}</li>)}</ul></section>}
@@ -132,4 +136,88 @@ export default function Settings() {
       items: [{ name: 'Sugar 1kg', quantity: 1, unitPrice: 200, lineTotal: 200, listPrice: 220 }, { name: 'Bread 400g', quantity: 2, unitPrice: 75, lineTotal: 150 }],
     }} />}
   </>
+}
+
+async function invokeSetup(body: Record<string, unknown>) {
+  const { data, error } = await supabase.functions.invoke('till-payments-setup', { body })
+  if (error) {
+    if (error instanceof FunctionsHttpError) {
+      const details = await error.context.json().catch(() => null)
+      throw new Error(details?.error || 'The request failed.')
+    }
+    throw error
+  }
+  if (data?.error) throw new Error(data.error)
+  return String(data?.message || 'Done')
+}
+
+function TillConnectPanel() {
+  const { businessId, business } = useAccount()
+  const [connection, setConnection] = useState<TillConnection | null | undefined>(undefined)
+  const [editing, setEditing] = useState(false)
+  const [type, setType] = useState<'till' | 'paybill'>('till')
+  const [busy, setBusy] = useState(''), [error, setError] = useState(''), [message, setMessage] = useState('')
+
+  const refresh = () => loadTillConnection(businessId).then(c => { setConnection(c); if (c) setType(c.shortcode_type as 'till' | 'paybill') })
+  useEffect(() => { refresh() }, [businessId]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (window.location.hash === '#mpesa') document.getElementById('mpesa')?.scrollIntoView() }, [connection])
+
+  async function run(action: string, body: Record<string, unknown> = {}) {
+    setBusy(action); setError(''); setMessage('')
+    try { setMessage(await invokeSetup({ businessId, action, ...body })); setEditing(false); await refresh() }
+    catch (caught) { setError(friendlyError(caught, 'The request failed.')); await refresh() }
+    finally { setBusy('') }
+  }
+
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const form = new FormData(event.currentTarget)
+    run('save', {
+      environment: form.get('environment'), shortcodeType: type, shortcode: String(form.get('shortcode') || '').trim(),
+      tillNumber: String(form.get('tillNumber') || '').trim(), consumerKey: String(form.get('consumerKey') || '').trim(), consumerSecret: String(form.get('consumerSecret') || '').trim(),
+    })
+  }
+
+  return <section className="panel" id="mpesa" style={{ marginTop: 16 }}>
+    <div className="panel-head"><h2>Automatic M-Pesa payment notifications</h2>
+      {connection?.connected && <span className="badge good">Connected</span>}</div>
+    <p className="hint" style={{ marginTop: -6 }}>When a customer pays your till or paybill, Safaricom notifies Radari and the payment appears at the till within seconds, ready to attach to the sale. This uses your own Daraja app with the C2B product.</p>
+    {connection === undefined ? null : connection && !editing ? <>
+      <ul className="simple-list">
+        <li><span>Type</span><strong>{connection.shortcode_type === 'till' ? 'Buy Goods till' : 'Paybill'}{connection.environment === 'sandbox' ? ' (sandbox)' : ''}</strong></li>
+        <li><span>{connection.shortcode_type === 'till' ? 'Store number' : 'Paybill number'}</span><strong>{connection.shortcode}</strong></li>
+        {connection.till_number && <li><span>Till number</span><strong>{connection.till_number}</strong></li>}
+        <li><span>Registered with Safaricom</span><strong>{connection.registered_at ? dateTime(connection.registered_at) : 'Not yet'}</strong></li>
+        <li><span>Last payment received</span><strong>{connection.last_payment_at ? dateTime(connection.last_payment_at) : 'None yet'}</strong></li>
+      </ul>
+      {connection.last_error && <div className="notice error">Safaricom: {connection.last_error}</div>}
+      <div className="page-actions" style={{ marginTop: 12 }}>
+        <button type="button" className="button secondary" onClick={() => setEditing(true)}>Change details</button>
+        {connection.environment === 'sandbox' && <button type="button" className="button secondary" disabled={!!busy} onClick={() => run('test', { amount: 10 })}>{busy === 'test' ? 'Sending' : 'Send test payment'}</button>}
+        <button type="button" className="button secondary" disabled={!!busy} onClick={() => run('save', { environment: connection.environment, shortcodeType: connection.shortcode_type, shortcode: connection.shortcode, tillNumber: connection.till_number })}>{busy === 'save' ? 'Registering' : 'Register again'}</button>
+        <button type="button" className="button danger" disabled={!!busy} onClick={() => { if (window.confirm('Stop receiving M-Pesa notifications in Radari?')) run('disconnect') }}>Disconnect</button>
+      </div>
+    </> : <form onSubmit={submit}>
+      <div className="segmented" role="radiogroup">
+        <button type="button" role="radio" aria-checked={type === 'till'} className={type === 'till' ? 'active' : ''} onClick={() => setType('till')}>Buy Goods till</button>
+        <button type="button" role="radio" aria-checked={type === 'paybill'} className={type === 'paybill' ? 'active' : ''} onClick={() => setType('paybill')}>Paybill</button>
+      </div>
+      <div className="form-row">
+        <label>{type === 'till' ? 'Store number (head office number)' : 'Paybill number'}<input name="shortcode" inputMode="numeric" required pattern="[0-9]{5,10}" defaultValue={connection?.shortcode || (type === 'paybill' ? business.mpesa_paybill || '' : '')} /></label>
+        {type === 'till' && <label>Till number customers pay to<input name="tillNumber" inputMode="numeric" pattern="[0-9]{5,10}" defaultValue={connection?.till_number || business.mpesa_till || ''} /></label>}
+        <label>Environment<select name="environment" defaultValue={connection?.environment || 'production'}><option value="production">Production (live payments)</option><option value="sandbox">Sandbox (testing)</option></select></label>
+      </div>
+      <div className="form-pair">
+        <label>Daraja consumer key<input name="consumerKey" autoComplete="off" required={!connection} placeholder={connection ? 'Leave blank to keep the saved key' : ''} /></label>
+        <label>Daraja consumer secret<input name="consumerSecret" type="password" autoComplete="new-password" required={!connection} placeholder={connection ? 'Leave blank to keep the saved secret' : ''} /></label>
+      </div>
+      <p className="hint">Get these from your app on developer.safaricom.co.ke after Safaricom approves it for go-live with the M-Pesa Express or C2B product on this shortcode. For a Buy Goods till, Safaricom registers the store (head office) number, which is on your M-Pesa business portal and is different from the till number. Credentials are stored on the server and are never shown to staff. In production, Safaricom allows the notification address to be set once per shortcode; if it was registered elsewhere before, ask Safaricom to clear it first.</p>
+      <div className="modal-actions">
+        {connection && <button type="button" className="button secondary" onClick={() => setEditing(false)}>Cancel</button>}
+        <button className="button" disabled={!!busy}>{busy === 'save' ? 'Connecting' : 'Save and connect'}</button>
+      </div>
+    </form>}
+    <ErrorNotice message={error} />
+    {message && <div className="notice success" role="status" style={{ marginTop: 10 }}>{message}</div>}
+  </section>
 }

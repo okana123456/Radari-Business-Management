@@ -49,6 +49,8 @@ await db.exec(sql('0004_business_management.sql'))
 await db.exec(sql('0004_business_management.sql')) // must be re-runnable
 await db.exec(sql('0005_operations_and_accounting.sql'))
 await db.exec(sql('0005_operations_and_accounting.sql'))
+await db.exec(sql('0006_till_payment_notifications.sql'))
+await db.exec(sql('0006_till_payment_notifications.sql'))
 await db.exec('grant all on all tables in schema public to service_role; grant all on all functions in schema public to service_role;')
 
 console.log('\nAfter 0004:')
@@ -396,6 +398,62 @@ await t('settings validation: logo must be an image, theme must be a colour', as
   await rejects(q(U.ownerA, `update businesses set theme_color='red' where id=$1`, [A]), /check constraint/)
   const r = await q(U.ownerA, `update businesses set theme_color='#0f766e', mpesa_till='123456', business_type='bar' where id=$1`, [A])
   assert(r.affectedRows === 1)
+})
+
+console.log('\n0006 till payment notifications:')
+const tokenA = 'a'.repeat(48), tokenB = 'b'.repeat(48)
+await q(null, `insert into till_settings (business_id, shortcode_type, shortcode, till_number, consumer_key, consumer_secret, callback_token, registered_at) values ($1,'till','174379','5123456','k','s',$2,now()), ($3,'paybill','600100','600100','k','s',$4,now())`, [A, tokenA, B, tokenB])
+const record = (token, trans, amount, shortcode = '174379') => one(null, `select record_till_payment($1,$2,now(),$3,$4,null,'2547XXXX123','JOHN') r`, [token, trans, amount, shortcode])
+let tp
+await t('payments are recorded once per M-Pesa receipt', async () => {
+  assert((await record(tokenA, 'QAB1CDE2FG', 450)).r === 'recorded')
+  assert((await record(tokenA, 'QAB1CDE2FG', 450)).r === 'recorded')
+  assert((await one(null, `select count(*)::int n from till_payments where trans_id='QAB1CDE2FG'`)).n === 1)
+  tp = (await one(null, `select id from till_payments where trans_id='QAB1CDE2FG'`)).id
+})
+await t('unknown token, bad receipt and wrong till are ignored', async () => {
+  assert((await record('c'.repeat(48), 'QZZ1CDE2FG', 10)).r === 'unknown_token')
+  assert((await record(tokenA, 'bad receipt', 10)).r === 'invalid_receipt')
+  assert((await record(tokenA, 'QZZ1CDE2FH', 10, '999999')).r === 'shortcode_mismatch')
+  assert((await record(tokenA, 'QZZ1CDE2FJ', 10, '5123456')).r === 'recorded') // till number also accepted
+})
+await t('browser roles cannot call the recorder or read credentials', async () => {
+  await rejects(q(U.ownerA, `select record_till_payment($1,'QXX1CDE2FG',now(),1)`, [tokenA]), /permission denied/)
+  await rejects(q(U.ownerA, `select consumer_secret from till_settings`), /permission denied/)
+  const st = await one(U.cashierA, `select * from till_connection_status($1)`, [A])
+  assert(st.connected === true && st.shortcode === '174379' && !('consumer_secret' in st), JSON.stringify(st))
+})
+await t('business B cannot see business A payments', async () => {
+  assert((await one(U.ownerB, `select count(*)::int n from till_payments where business_id=$1`, [A])).n === 0)
+  assert((await one(U.cashierA, `select count(*)::int n from till_payments where business_id=$1`, [A])).n === 2)
+  await rejects(q(U.stockA, `select * from till_connection_status($1)`, [A]), /Not allowed/)
+})
+let claimSale
+await t('checkout claims a received payment and stores its receipt', async () => {
+  const r = await one(U.cashierA, `select * from complete_pos_sale($1,'mpesa',$2,null,null,null,$3)`, [A, JSON.stringify([{ product_id: p1, quantity: 2 }]),
+    JSON.stringify([{ method: 'mpesa', amount: 320, till_payment_id: tp }])])
+  claimSale = r.sale_id
+  const pay = await one(null, `select status, sale_id from till_payments where id=$1`, [tp])
+  const sp = await one(null, `select reference, till_payment_id from sale_payments where sale_id=$1`, [r.sale_id])
+  assert(pay.status === 'claimed' && pay.sale_id === r.sale_id && sp.reference === 'QAB1CDE2FG' && sp.till_payment_id === tp, JSON.stringify({ pay, sp }))
+})
+await t('a payment cannot be used twice, for more than received, or for cash', async () => {
+  await rejects(q(U.cashierA, `select * from complete_pos_sale($1,'mpesa',$2,null,null,null,$3)`, [A, JSON.stringify([{ product_id: p1, quantity: 1 }]), JSON.stringify([{ method: 'mpesa', amount: 160, till_payment_id: tp }])]), /already been used/)
+  const small = (await one(null, `select id from till_payments where trans_id='QZZ1CDE2FJ'`)).id
+  await rejects(q(U.cashierA, `select * from complete_pos_sale($1,'mpesa',$2,null,null,null,$3)`, [A, JSON.stringify([{ product_id: p1, quantity: 1 }]), JSON.stringify([{ method: 'mpesa', amount: 160, till_payment_id: small }])]), /less than the amount/)
+  await rejects(q(U.cashierA, `select * from complete_pos_sale($1,'cash',$2,null,null,null,$3)`, [A, JSON.stringify([{ product_id: p1, quantity: 1 }]), JSON.stringify([{ method: 'cash', amount: 160, till_payment_id: small }])]), /only be used for the M-Pesa part/)
+  const bTp = (await record(tokenB, 'QBB1CDE2FG', 999, '600100'), (await one(null, `select id from till_payments where trans_id='QBB1CDE2FG'`)).id)
+  await rejects(q(U.cashierA, `select * from complete_pos_sale($1,'mpesa',$2,null,null,null,$3)`, [A, JSON.stringify([{ product_id: p1, quantity: 1 }]), JSON.stringify([{ method: 'mpesa', amount: 160, till_payment_id: bTp }])]), /already been used/)
+})
+await t('voiding the sale releases the payment', async () => {
+  await q(U.ownerA, `select void_sale($1,$2,'customer changed mind')`, [A, claimSale])
+  const pay = await one(null, `select status, sale_id from till_payments where id=$1`, [tp])
+  assert(pay.status === 'unclaimed' && pay.sale_id === null, JSON.stringify(pay))
+})
+await t('owner can set aside a payment; cashier cannot', async () => {
+  await rejects(q(U.cashierA, `select set_till_payment_status($1,$2,'dismissed','loan repayment')`, [A, tp]), /Only the owner/)
+  await q(U.ownerA, `select set_till_payment_status($1,$2,'dismissed','loan repayment')`, [A, tp])
+  assert((await one(null, `select status from till_payments where id=$1`, [tp])).status === 'dismissed')
 })
 
 await t('browser cannot read raw callbacks, phones or Daraja IDs', async () => {

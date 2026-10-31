@@ -10,6 +10,7 @@ Run these in the Supabase SQL Editor, in order. Never edit a migration that has 
 | `migrations/0002_onboarding_and_subscriptions.sql` | Business provisioning, subscription activation, reminders |
 | `migrations/0003_pos_checkout.sql` | Product categories, first checkout function, Realtime for products |
 | `migrations/0004_business_management.sql` | Staff roles, hardened checkout, stock audit trail, void, purchases, expenses, customers and credit, suppliers, staff invitations, settings, reports, payment verification columns |
+| `migrations/0006_till_payment_notifications.sql` | Automatic M-Pesa till and paybill payment notifications, used at checkout once only |
 | `migrations/0005_operations_and_accounting.sql` | Card and split payments, discounts and price floor, loyalty points, sell by serving, batches and expiry, tax categories, credit due dates, creditors, categories, chart of accounts and journal, M-Pesa and branding settings, extended reports |
 
 Check what is already applied:
@@ -32,6 +33,8 @@ where proname in ('complete_pos_sale', 'void_sale', 'business_report');
 |---|---|---|
 | `initiate-subscription-payment` | Off (validates the user itself) | Owner starts an M-Pesa STK Push |
 | `daraja-callback` | Off (Safaricom calls it) | Receives the result, **confirms it with the Daraja STK Query API**, then activates 30 days |
+| `till-payment-notify` | Off (Safaricom calls it) | Receives each payment made to a business's till or paybill (Daraja C2B confirmation) |
+| `till-payments-setup` | Off (validates the owner itself) | Stores a business's Daraja credentials and registers the notification address |
 | `subscription-maintenance` | Off (requires `x-cron-secret`) | Finishes unverified payments, expires abandoned requests, moves expired subscriptions to grace or suspended |
 
 Each `index.ts` is standalone, so you can paste it into the Dashboard editor or deploy it with the CLI:

@@ -24,6 +24,7 @@ const Accounts = lazy(() => import('./pages/Accounts'))
 const Tax = lazy(() => import('./pages/Tax'))
 const ProfitLoss = lazy(() => import('./pages/ProfitLoss'))
 const Glovo = lazy(() => import('./pages/Glovo'))
+const TillPayments = lazy(() => import('./pages/TillPayments'))
 const Reports = lazy(() => import('./pages/Reports'))
 const Staff = lazy(() => import('./pages/Staff'))
 const SubscriptionPage = lazy(() => import('./pages/Subscription'))
@@ -232,6 +233,7 @@ function AccountRoute({ session }: { session: Session | null }) {
         <Route path="accounts" element={<Guard permission="accounting"><Accounts /></Guard>} />
         <Route path="tax" element={<Guard permission="tax"><Tax /></Guard>} />
         <Route path="profit-loss" element={<Guard permission="profit"><ProfitLoss /></Guard>} />
+        <Route path="mpesa" element={<Guard permission="tillPayments"><TillPayments /></Guard>} />
         <Route path="glovo" element={<Guard permission="glovo"><Glovo /></Guard>} />
         <Route path="reports" element={<Guard permission="reports"><Reports /></Guard>} />
         <Route path="staff" element={<Guard permission="staff"><Staff /></Guard>} />

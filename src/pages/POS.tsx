@@ -6,6 +6,7 @@ import { can } from '../lib/roles'
 import { businessToday, friendlyError, money, newReference, paymentLabel, qty } from '../lib/format'
 import { ReceiptData, ReceiptView } from '../components/Receipt'
 import { Loading, Modal } from '../components/ui'
+import { minutesAgo, payerLabel, playChime, TillPayment, useOpenTillPayments } from '../lib/tillPayments'
 
 type Mode = 'unit' | 'serving'
 type CartItem = { key: string; product: Product; mode: Mode; quantity: number; price: number }
@@ -37,10 +38,18 @@ export default function POS() {
   const [lastSale, setLastSale] = useState<{ id: string; number: string; at: number } | null>(null)
   const [cancelling, setCancelling] = useState(false)
   const [switching, setSwitching] = useState(false)
+  const [selectedTill, setSelectedTill] = useState<TillPayment | null>(null)
+  const [alert, setAlert] = useState<TillPayment | null>(null)
+  const alertTimer = useRef<number | undefined>(undefined)
+  const { connection, payments: tillPayments, remove: removeTill } = useOpenTillPayments(businessId, payment => {
+    playChime(); setAlert(payment)
+    window.clearTimeout(alertTimer.current)
+    alertTimer.current = window.setTimeout(() => setAlert(null), 20000)
+  })
   const saleReference = useRef<string | null>(null)
   const searchInput = useRef<HTMLInputElement>(null)
 
-  useEffect(() => { saleReference.current = null }, [cart, method, customer, reference, split, redeem, dueDate])
+  useEffect(() => { saleReference.current = null }, [cart, method, customer, reference, split, redeem, dueDate, selectedTill])
 
   const active = useMemo(() => products.filter(p => p.active), [products])
   const categories = useMemo(() => ['All', ...[...new Set(active.map(p => p.category || 'General'))].sort()], [active])
@@ -105,6 +114,17 @@ export default function POS() {
     if (match) { add(match, 'unit'); setSearch('') }
   }
 
+  function applyTillPayment(payment: TillPayment) {
+    setSelectedTill(payment); setReference(payment.trans_id); setAlert(null); setError('')
+    if (payment.amount >= total || !cart.length) setMethod('mpesa')
+    else { setMethod('split'); setSplit({ cash: '', mpesa: String(payment.amount), card: '', credit: '' }) }
+  }
+
+  function chooseMethod(next: Method) {
+    setMethod(next)
+    if (next !== 'mpesa' && next !== 'split') setSelectedTill(null)
+  }
+
   function fillSplit(field: keyof Split) {
     const others = (Object.keys(split) as (keyof Split)[]).filter(k => k !== field).reduce((s, k) => s + Number(split[k] || 0), 0)
     setSplit({ ...split, [field]: String(Math.max(0, round2(total - others))) })
@@ -123,6 +143,8 @@ export default function POS() {
     if (method === 'split' && splitTotal !== total) return `The payment parts add up to ${money(splitTotal)}, but the total is ${money(total)}`
     if (usesCredit && !customer) return 'Choose a customer for the credit part of this sale'
     if (method === 'cash' && tendered && Number(tendered) < total) return 'Cash received is less than the total'
+    if (selectedTill && method === 'mpesa' && selectedTill.amount < total) return `The M-Pesa payment of ${money(selectedTill.amount)} is less than the total. Use Split and take the rest another way.`
+    if (selectedTill && method === 'split' && Number(split.mpesa) > selectedTill.amount) return `The M-Pesa part cannot be more than the ${money(selectedTill.amount)} received`
     return null
   }
 
@@ -133,9 +155,11 @@ export default function POS() {
     setBusy(true); setError('')
     saleReference.current ||= newReference()
     const sold = cart.map(item => ({ ...item }))
+    const till = selectedTill && (method === 'mpesa' || method === 'split') ? selectedTill : null
     const paymentLines = method === 'split'
-      ? (Object.keys(split) as (keyof Split)[]).filter(k => Number(split[k]) > 0).map(k => ({ method: k, amount: round2(Number(split[k])), reference: k === 'mpesa' ? reference.trim() || null : null }))
-      : null
+      ? (Object.keys(split) as (keyof Split)[]).filter(k => Number(split[k]) > 0).map(k => ({ method: k, amount: round2(Number(split[k])), reference: k === 'mpesa' ? reference.trim() || null : null,
+          ...(k === 'mpesa' && till ? { till_payment_id: till.id } : {}) }))
+      : method === 'mpesa' && till ? [{ method: 'mpesa', amount: total, reference: till.trans_id, till_payment_id: till.id }] : null
     const { data, error: saleError } = await supabase.rpc('complete_pos_sale', {
       target_business_id: businessId,
       chosen_payment_method: method === 'split' ? 'cash' : method,
@@ -152,8 +176,10 @@ export default function POS() {
     if (saleError) {
       setError(friendlyError(saleError, 'The sale was not saved. Please try again.'))
       if (/stock|available/i.test(saleError.message)) reloadProducts()
+      if (/M-Pesa payment has already been used/i.test(saleError.message) && till) { removeTill(till.id); setSelectedTill(null) }
       return
     }
+    if (till) removeTill(till.id)
     const result = Array.isArray(data) ? data[0] : data
     if (!result?.already_recorded) {
       const used = new Map<string, number>()
@@ -170,7 +196,7 @@ export default function POS() {
       cashier: String(user.user_metadata?.full_name || user.email || ''), customer: customer?.name,
     })
     setCart([]); setReference(''); setTendered(''); setCustomer(null); setRedeem(''); setDueDate('')
-    setSplit({ cash: '', mpesa: '', card: '', credit: '' }); setMethod('cash'); setShowCart(false)
+    setSplit({ cash: '', mpesa: '', card: '', credit: '' }); setMethod('cash'); setShowCart(false); setSelectedTill(null)
     searchInput.current?.focus()
   }
 
@@ -198,6 +224,11 @@ export default function POS() {
       </div>
       <div className="category-strip">{categories.map(item =>
         <button type="button" className={category === item ? 'active' : ''} onClick={() => setCategory(item)} key={item}>{item}</button>)}</div>
+      {alert && <div className="till-alert" role="status">
+        <span><strong>Payment received: {money(alert.amount)}</strong> from {payerLabel(alert)} · {alert.trans_id}</span>
+        <span className="page-actions"><button type="button" className="button small" onClick={() => { applyTillPayment(alert); setShowCart(true) }}>Use for this sale</button>
+          <button type="button" className="button secondary small" onClick={() => setAlert(null)}>Hide</button></span>
+      </div>}
       {error && <div className="pos-error" role="alert">{error}</div>}
       {productsError && <div className="pos-error" role="alert">{productsError} <button type="button" className="link-button" onClick={reloadProducts}>Retry</button></div>}
       {!productsLoaded && !productsError ? <Loading label="Loading products" /> :
@@ -253,8 +284,19 @@ export default function POS() {
         </button>
         {customer && business.loyalty_enabled && customer.loyalty_points > 0 && <div className="pay-panel"><div className="pay-row"><span>Redeem</span>
           <input type="number" min="0" max={customer.loyalty_points} step="1" value={redeem} placeholder={`Up to ${customer.loyalty_points} points`} onChange={event => setRedeem(event.target.value)} aria-label="Points to redeem" /></div></div>}
+        {(connection?.connected || tillPayments.length > 0) && <div className="till-list">
+          <div className="till-list-head"><span>Received on till</span>{connection?.connected ? <small>Live</small> : <small>Not connected</small>}</div>
+          {tillPayments.length === 0 ? <div className="muted">Waiting for M-Pesa payments</div> :
+            tillPayments.slice(0, 4).map(p => <div key={p.id} className={`till-row ${selectedTill?.id === p.id ? 'selected' : ''}`}>
+              <span><strong>{money(p.amount)}</strong> {payerLabel(p)}<small>{p.trans_id} · {minutesAgo(p.trans_time)}</small></span>
+              {selectedTill?.id === p.id
+                ? <button type="button" className="button secondary small" onClick={() => { setSelectedTill(null); setReference('') }}>Remove</button>
+                : <button type="button" className="button small" onClick={() => applyTillPayment(p)}>Use</button>}
+            </div>)}
+          {selectedTill && method === 'mpesa' && selectedTill.amount > total && cart.length > 0 && <div className="hint">Customer paid {money(selectedTill.amount - total)} more than the total. Give change.</div>}
+        </div>}
         <div className="payment-options" role="radiogroup" aria-label="Payment method">{(['cash', 'mpesa', 'card', 'credit', 'split'] as Method[]).map(m =>
-          <button type="button" role="radio" aria-checked={method === m} className={method === m ? 'active' : ''} onClick={() => setMethod(m)} key={m}>{paymentLabel(m)}</button>)}
+          <button type="button" role="radio" aria-checked={method === m} className={method === m ? 'active' : ''} onClick={() => chooseMethod(m)} key={m}>{paymentLabel(m)}</button>)}
         </div>
         {method === 'cash' && <div className="pay-panel"><div className="pay-row"><span>Received</span>
           <input type="number" inputMode="decimal" min="0" step="1" value={tendered} placeholder={String(total)} onChange={event => setTendered(event.target.value)} aria-label="Cash received" /></div>
@@ -263,7 +305,8 @@ export default function POS() {
           {mpesaLines.length ? <div className="mpesa-details">{mpesaLines.map(([label, value]) => <div key={label}>{label}: <strong>{value}</strong></div>)}
             <div>Amount: <strong>{money(method === 'split' ? Number(split.mpesa) : total)}</strong></div></div>
             : <div className="muted">Add your till or paybill in Settings to show it here.</div>}
-          <div className="pay-row"><span>Code</span><input value={reference} maxLength={40} onChange={event => setReference(event.target.value.toUpperCase())} placeholder="M-Pesa confirmation code" aria-label="M-Pesa code" /></div>
+          {selectedTill ? <div className="pay-row"><span>Code</span><strong>{selectedTill.trans_id} (confirmed by Safaricom)</strong></div>
+            : <div className="pay-row"><span>Code</span><input value={reference} maxLength={40} onChange={event => setReference(event.target.value.toUpperCase())} placeholder="M-Pesa confirmation code" aria-label="M-Pesa code" /></div>}
         </div>}
         {method === 'card' && <div className="pay-panel"><div className="pay-row"><span>Ref</span><input value={reference} maxLength={40} onChange={event => setReference(event.target.value)} placeholder="Card slip reference (optional)" aria-label="Card reference" /></div></div>}
         {method === 'split' && <div className="pay-panel">

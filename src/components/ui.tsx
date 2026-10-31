@@ -39,7 +39,7 @@ export function Stat({ label, value, hint, tone }: { label: string; value: React
 
 const STATUS_TONE: Record<string, string> = { completed: 'good', active: 'good', accepted: 'good', confirmed: 'good', paid: 'good', voided: 'critical', disabled: 'critical', failed: 'critical', suspended: 'critical', overdue: 'critical', expired: 'critical', grace: 'warning', pending: 'warning', submitted: 'warning', revoked: 'muted', cancelled: 'muted' }
 export function StatusBadge({ status, label }: { status: string; label?: string }) {
-  return <span className={`badge status ${STATUS_TONE[status] || 'muted'}`}>{label || status.replace(/_/g, ' ')}</span>
+  return <span className={`badge ${label ? "" : "status "}${STATUS_TONE[status] || "muted"}`}>{label || status.replace(/_/g, ' ')}</span>
 }
 
 const PRESETS: [string, string][] = [['today', 'Today'], ['yesterday', 'Yesterday'], ['7days', '7 days'], ['month', 'This month'], ['lastmonth', 'Last month'], ['30days', '30 days']]

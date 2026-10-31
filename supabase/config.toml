@@ -9,3 +9,9 @@ verify_jwt = false
 [functions.subscription-maintenance]
 verify_jwt = false
 
+
+[functions.till-payment-notify]
+verify_jwt = false
+
+[functions.till-payments-setup]
+verify_jwt = false
